@@ -58,6 +58,15 @@ class ChatResponse(BaseModel):
     response: str
 
 
+class ResetRequest(BaseModel):
+    chat_id: int
+
+
+class ResetResponse(BaseModel):
+    chat_id: int
+    status: str
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     print(f"Получен запрос от {request.chat_id}: {request.message}")
@@ -70,7 +79,7 @@ async def chat(request: ChatRequest):
         chat_id = request.chat_id
         query = request.message.strip()
         logger.info(f"New request from user {request.chat_id}: {query}")
-        history = dialogue_histories[chat_id][-10:]
+        history = dialogue_histories[chat_id][-4:]
 
         expanded_query = await explain_abbreviations(query, abbreviations)
         logger.info(f"После expand_abbr: {expanded_query}")
@@ -98,3 +107,16 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logger.exception(f"Error while processing request from user {request.chat_id}")
         return ChatResponse(chat_id=request.chat_id, response="Произошла ошибка при обработке запроса.")
+
+
+@app.post("/clear_history", response_model=ResetResponse)
+async def reset_history(request: ResetRequest):
+    chat_id = request.chat_id
+
+    if chat_id in dialogue_histories:
+        dialogue_histories.pop(chat_id)
+        logger.info(f"История очищена для пользователя {chat_id}")
+    else:
+        logger.info(f"Попытка очистки истории: история для пользователя {chat_id} не найдена")
+
+    return ResetResponse(chat_id=chat_id, status="ok")
