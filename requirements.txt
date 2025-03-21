@@ -1,0 +1,9 @@
+pydantic~=2.10.6
+fastapi~=0.115.11
+pydantic_settings~=2.8.1
+
+openai~=1.68.0
+numpy~=1.26.4
+tqdm~=4.67.1
+transformers~=4.49.0
+pandas
