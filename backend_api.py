@@ -1,20 +1,10 @@
 from contextlib import asynccontextmanager
 from typing import Literal
 
-import openai
 from fastapi import FastAPI
 from pydantic import BaseModel
-import asyncio
-from lightrag.lightrag import LightRAG, QueryParam
-from nltk import wordpunct_tokenize
-from nltk.stem.snowball import SnowballStemmer
-import numpy as np
-import torch
-import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModel
-from tqdm import tqdm
+from lightrag.lightrag import QueryParam
 
-from config import settings
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K
 import logging
 

@@ -13,18 +13,17 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import openai
-import asyncio
 
 TEMPERATURE = 0.3
 QUERY_MAX_TOKENS = 4000
 TOP_K = 30
-WORKING_DIR = 'light_rag_db_v2'
+WORKING_DIR = settings.working_dir
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(WORKING_DIR)}')
-ABBREVIATIONS_FNAME = 'full_abbreviations_updated.json'
+ABBREVIATIONS_FNAME = settings.abbreviations_file
 print(f'os.path.isfile({ABBREVIATIONS_FNAME}) = {os.path.isfile(ABBREVIATIONS_FNAME)}')
 LOCAL_EMBEDDER_DIMENSION = 768
 LOCAL_EMBEDDER_MAX_TOKENS = 4096
-LOCAL_EMBEDDER_NAME = 'gte-multilingual-base'
+LOCAL_EMBEDDER_NAME = settings.local_embedder_path
 print(f'os.path.isdir({LOCAL_EMBEDDER_NAME}) = {os.path.isdir(LOCAL_EMBEDDER_NAME)}')
 ENCODER = AutoTokenizer.from_pretrained(LOCAL_EMBEDDER_NAME)
 SYSTEM_PROMPT_FOR_MENO = '''Ты - Менон, разработанный Иваном Бондаренко. Ты - дружелюбный ассистент, разговаривающий на русском языке и отвечающий на вопросы пользователей о Новосибирском государственном университете (НГУ) и Новосибирском Академгородке. Ты очень любишь Новосибирский государственный университет и поэтому стремишься заинтересовать разные категории своих пользователей: абитуриентов поступлением в университет, студентов - учёбой, а учёных и преподавателей - работой в нём. Твои ответы должны быть максимально точными, понятными и подробными. Если же ты понимаешь, что твоей базы знаний недостаточно для точного ответа, ты должен сообщить, что тебе не хватает знаний для компетентного ответа, и предложить уважаемому пользователю задать какой-либо другой вопрос. Если пользователь спрашивает информацию про этот год или этот месяц (в общем, про информацию, зависящую от времени), то отвечай так, как-будто сейчас март 2025 года.
