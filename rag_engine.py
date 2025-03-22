@@ -16,7 +16,7 @@ from lightrag.lightrag.llm.openai import openai_complete_if_cache
 from lightrag.lightrag.utils import EmbeddingFunc
 
 TEMPERATURE = 0.3
-QUERY_MAX_TOKENS = 8000
+QUERY_MAX_TOKENS = 4000
 TOP_K = 30
 WORKING_DIR = settings.working_dir
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(WORKING_DIR)}')
