@@ -1,22 +1,21 @@
 import codecs
 import json
+import logging
+from collections import defaultdict
 from contextlib import asynccontextmanager
+from typing import List, Dict
 from typing import Literal
 
 from fastapi import FastAPI
+from nltk import wordpunct_tokenize
 from pydantic import BaseModel
 
 from config import settings
 from lightrag.lightrag import QueryParam
-
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations
-import logging
+    explain_abbreviations, URLS_FNAME, prepare_references
 
-from collections import defaultdict
-from typing import List, Dict
-
-QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "hybrid"
+QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,12 +29,18 @@ dialogue_histories: Dict[int, List[Dict[str, str]]] = defaultdict(list)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rag_instance, abbreviations
+    global rag_instance, abbreviations, urls
     rag_instance = await initialize_rag()
     try:
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
             logger.info(f"📚 Загружено сокращений: {len(abbreviations)}")
+        with codecs.open(URLS_FNAME, mode='r', encoding='utf-8') as fp:
+            urls_ = json.load(fp)
+        urls = dict()
+        for k in urls_:
+            k_new = ' '.join(list(filter(lambda x: x.isalnum(), wordpunct_tokenize(k.lower()))))
+            urls[k_new] = urls_[k]
     except Exception as e:
         logger.exception("Не удалось загрузить файл сокращений")
 
@@ -99,11 +104,12 @@ async def chat(request: ChatRequest):
             ),
             system_prompt=SYSTEM_PROMPT_FOR_MENO
         )
+        answer = prepare_references(response_text, urls)
         dialogue_histories[chat_id].append({"role": "user", "content": query})
-        dialogue_histories[chat_id].append({"role": "assistant", "content": response_text})
-        logger.info(f"Ответ сформирован для {chat_id}: {response_text}")
+        dialogue_histories[chat_id].append({"role": "assistant", "content": answer})
+        logger.info(f"Ответ сформирован для {chat_id}: {answer}")
 
-        return ChatResponse(chat_id=request.chat_id, response=response_text)
+        return ChatResponse(chat_id=request.chat_id, response=answer)
     except Exception as e:
         logger.exception(f"Error while processing request from user {request.chat_id}")
         return ChatResponse(chat_id=request.chat_id, response="Произошла ошибка при обработке запроса.")

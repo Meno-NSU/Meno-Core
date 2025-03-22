@@ -1,42 +1,67 @@
 import os
 from typing import List
 
-from nltk import SnowballStemmer, wordpunct_tokenize
-
-from config import settings
-from lightrag.lightrag.utils import EmbeddingFunc
-from lightrag.lightrag import LightRAG, QueryParam
-from lightrag.lightrag.llm.openai import openai_complete_if_cache
-from lightrag.lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
-from transformers import AutoTokenizer, AutoModel
-import torch
-import torch.nn.functional as F
 import numpy as np
 import openai
+import torch
+import torch.nn.functional as F
+from fuzzywuzzy import process
+from nltk import SnowballStemmer, wordpunct_tokenize
+from transformers import AutoTokenizer, AutoModel
+
+from config import settings
+from lightrag.lightrag import LightRAG
+from lightrag.lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
+from lightrag.lightrag.llm.openai import openai_complete_if_cache
+from lightrag.lightrag.utils import EmbeddingFunc
 
 TEMPERATURE = 0.3
-QUERY_MAX_TOKENS = 4000
-TOP_K = 30
+QUERY_MAX_TOKENS = 8000
+TOP_K = 60
 WORKING_DIR = settings.working_dir
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(WORKING_DIR)}')
 ABBREVIATIONS_FNAME = settings.abbreviations_file
 print(f'os.path.isfile({ABBREVIATIONS_FNAME}) = {os.path.isfile(ABBREVIATIONS_FNAME)}')
+URLS_FNAME = 'resources/validated_urls.json'
+print(f'os.path.isfile({URLS_FNAME}) = {os.path.isfile(URLS_FNAME)}')
 LOCAL_EMBEDDER_DIMENSION = 768
 LOCAL_EMBEDDER_MAX_TOKENS = 4096
 LOCAL_EMBEDDER_NAME = settings.local_embedder_path
 print(f'os.path.isdir({LOCAL_EMBEDDER_NAME}) = {os.path.isdir(LOCAL_EMBEDDER_NAME)}')
 ENCODER = AutoTokenizer.from_pretrained(LOCAL_EMBEDDER_NAME)
-SYSTEM_PROMPT_FOR_MENO = '''Ты - Менон, разработанный Иваном Бондаренко. Ты - дружелюбный ассистент, разговаривающий на русском языке и отвечающий на вопросы пользователей о Новосибирском государственном университете (НГУ) и Новосибирском Академгородке. Ты очень любишь Новосибирский государственный университет и поэтому стремишься заинтересовать разные категории своих пользователей: абитуриентов поступлением в университет, студентов - учёбой, а учёных и преподавателей - работой в нём. Твои ответы должны быть максимально точными, понятными и подробными. Если же ты понимаешь, что твоей базы знаний недостаточно для точного ответа, ты должен сообщить, что тебе не хватает знаний для компетентного ответа, и предложить уважаемому пользователю задать какой-либо другой вопрос. Если пользователь спрашивает информацию про этот год или этот месяц (в общем, про информацию, зависящую от времени), то отвечай так, как-будто сейчас март 2025 года.
----История общения с пользователем---
+SYSTEM_PROMPT_FOR_MENO = """---Role---
+
+Вы - Менон, разработанный Иваном Бондаренко, научным сотрудником Новосибирского государственного университета (НГУ). Вас разработали в лаборатории прикладных цифровых технологий НГУ, где, собственно, и работает Иван Бондаренко. Вы - дружелюбный ассистент, разговаривающий на русском языке и отвечающий на вопросы пользователей о Новосибирском государственном университете (НГУ) и Новосибирском Академгородке. Вы очень любите Новосибирский государственный университет и поэтому стремитесь заинтересовать разные категории своих пользователей: абитуриентов поступлением в университет, студентов - учёбой, а учёных и преподавателей - работой в нём.
+
+---Goal---
+
+Сформируйте краткий ответ на основе фрагментов документа (Document Chunks) и следуйте правилам ответа (Response Rules), учитывая как историю обсуждения (Conversation History), так и текущий запрос. Обобщите всю информацию, содержащуюся в предоставленных фрагментах документа (Document Chunks), и включите ваши общие знания, относящиеся к этим фрагментам документа (Document Chunks). Не включайте информацию, не указанную в фрагментах документа (Document Chunks).
+
+При работе с контентом с временными метками:
+1. Каждый элемент контента имеет временную метку "created_at", указывающую, когда мы приобрели эти знания.
+2. При столкновении с противоречивой информацией учитывайте как контент, так и временную метку.
+3. Не следует автоматически предпочитать самый последний контент - используйте суждение на основе контекста.
+4. Для запросов, связанных со временем, приоритизируйте временную информацию в контенте перед учетом временных меток создания.
+5. Считайте, что сейчас - конец марта 2025 года.
+
+---Conversation History---
 {history}
 
----База знаний---
-{context_data}
+---Document Chunks---
+{content_data}
 
----Правила ответа---
+---Response Rules---
 
-- Ожидаемый формат и длина: {response_type}
-'''
+- Целевой формат и длина: {response_type}
+- Не используйте форматирование markdown.
+- Пожалуйста, отвечайте на русском языке.
+- Обращайтесь к пользователю исключительно на "вы".
+- Убедитесь, что ответ сохраняет преемственность с историей разговора (Conversation History).
+- Перечислите до 5 самых важных источников информации в конце в разделе "Ссылки".
+- Если вы не знаете ответа, просто скажите об этом.
+- Не включайте информацию, не представленную во фрагментах документа (Document Chunks).
+- Если пользователь пишет что-то о политике, религии, национальностях, наркотиках, криминале или пишет просто оскорбительный или токсичный текст в адрес какого-то человека или университета, вежливо и непреклонно откажитесь от разговора и предложите сменить тему.
+"""
 
 TEMPLATE_FOR_ABBREVIATION_EXPLAINING = '''Отредактируйте, пожалуйста, текст пользовательского вопроса так, чтобы этот вопрос стал более простым и понятным для обычных людей от юных старшеклассников до пожилых мужчин и женщин. При этом не надо, пожалуйста, применять markdown или иной вид гипертекста. Главное, на что вам надо обратить внимание и по возможности исправить - это логика изложения и понятность формулировок вопроса. Ничего не объясняйте и не комментируйте своё решение, просто перепишите текст вопроса.
 
@@ -208,8 +233,8 @@ async def initialize_rag():
     emb_model = AutoModel.from_pretrained(
         LOCAL_EMBEDDER_NAME,
         trust_remote_code=True,
-        # device_map='cuda:0'
-        device_map='cpu'
+        device_map='cuda:0'
+        # device_map='cpu'
     )
     emb_model.eval()
 
@@ -233,3 +258,44 @@ async def initialize_rag():
     await rag.initialize_storages()
 
     return rag
+
+
+def prepare_references(llm_answer: str, reference_dict: dict) -> str:
+    prefix = 'Ссылки:\n1. '
+    found_idx = llm_answer.rfind(prefix)
+    if found_idx < 0:
+        return llm_answer
+    counter = 1
+    references_for_answer = []
+    prepared_llm_answer = llm_answer[:found_idx].strip()
+    subphrase = llm_answer[(found_idx + len(prefix)):].strip()
+    number_of_next_item = f'\n{counter + 1}. '
+    found_idx = subphrase.find(number_of_next_item)
+    while found_idx >= 0:
+        reference_title = subphrase[:found_idx].strip()
+        references_for_answer.append(
+            ' '.join(list(filter(lambda x: x.isalnum(), wordpunct_tokenize(reference_title.lower())))))
+        subphrase = subphrase[(found_idx + len(number_of_next_item)):].strip()
+        counter += 1
+        number_of_next_item = f'\n{counter + 1}. '
+        found_idx = subphrase.find(number_of_next_item)
+    reference_title = subphrase.strip()
+    references_for_answer.append(
+        ' '.join(list(filter(lambda x: x.isalnum(), wordpunct_tokenize(reference_title.lower())))))
+    urls_for_answer = []
+    all_references = list(reference_dict.keys())
+    for it in references_for_answer:
+        a = process.extractOne(it, all_references)
+        if a[1] > 90:
+            urls_for_answer.append((reference_dict[a[0]], a[1]))
+    if len(urls_for_answer) > 0:
+        urls_for_answer.sort(key=lambda it: -it[1])
+        if urls_for_answer[0][1] <= 98:
+            urls_for_answer = urls_for_answer[0:1]
+        else:
+            urls_for_answer = list(filter(lambda it: (it[1] > 98) and (it[0].find('wiki') < 0), urls_for_answer))
+        urls_for_answer = list(set(map(lambda it: it[0], urls_for_answer)))
+        prepared_llm_answer += '\n\nПолезные ссылки:'
+        for it in urls_for_answer:
+            prepared_llm_answer += '\n' + it
+    return prepared_llm_answer

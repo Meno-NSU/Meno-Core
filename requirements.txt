@@ -6,4 +6,5 @@ openai
 numpy
 tqdm
 transformers
+fuzzywuzzy
 pandas
