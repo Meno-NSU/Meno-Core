@@ -17,7 +17,7 @@ from lightrag.lightrag.utils import EmbeddingFunc
 
 TEMPERATURE = 0.3
 QUERY_MAX_TOKENS = 8000
-TOP_K = 60
+TOP_K = 30
 WORKING_DIR = settings.working_dir
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(WORKING_DIR)}')
 ABBREVIATIONS_FNAME = settings.abbreviations_file
