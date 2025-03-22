@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
         for k in urls_:
             k_new = ' '.join(list(filter(lambda x: x.isalnum(), wordpunct_tokenize(k.lower()))))
             urls[k_new] = urls_[k]
+        logger.info(f"Загружено ссылок: {len(urls)}")
     except Exception as e:
         logger.exception("Не удалось загрузить файл сокращений")
 
