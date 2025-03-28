@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     working_dir: Path
     abbreviations_file: Path
     
-    # Links
+    # LINKS
     urls_path: Path
 
     class Config:
