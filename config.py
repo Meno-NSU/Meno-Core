@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # RAG
     working_dir: Path
     abbreviations_file: Path
+    
+    # Links
+    urls_path: Path
 
     class Config:
         env_file = ".env"
