@@ -27,14 +27,12 @@ class LinkSearcher:
         ]
 
         links = []
-        ins = 0
         for chunk in valid_chunks:
             content: str = chunk["content"]
             header = content[:content.find("\n")]
             link = self.urls.get(header)
             if link:
                 links.append(self.urls[header])
-                ins += 1
         return links
 
     async def get_formated_answer(self, query: str, answer: str) -> str:
