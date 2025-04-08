@@ -5,11 +5,12 @@ import json
 
 class LinkSearcher:
 
-    def __init__(self, urls_path: Path | str, lightrag_instance: LightRAG, top_k: int):
+    def __init__(self, urls_path: Path | str, lightrag_instance: LightRAG, top_k: int, max_links: int = 3):
         self.lightrag_instance = lightrag_instance
         self.top_k = top_k
         urls_path = Path(urls_path)
-        with urls_path.open( mode='r', encoding='utf-8') as fp:
+        self.max_links = max_links
+        with urls_path.open(mode='r', encoding='utf-8') as fp:
             self.urls = json.load(fp)
 
     async def get_links(self, query: str) -> list[str]:
@@ -38,5 +39,5 @@ class LinkSearcher:
     async def get_formated_answer(self, query: str, answer: str) -> str:
         links = await self.get_links(query)
         if links:
-            return f"{answer}\n\nПолезные ссылки:\n{'\n'.join(links)}"
+            return f"{answer}\n\nПолезные ссылки:\n{'\n'.join(links[:self.max_links])}"
         return answer

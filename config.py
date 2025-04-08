@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     
     # LINKS
     urls_path: Path
+    max_links: int = 3
 
     class Config:
         env_file = ".env"

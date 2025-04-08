@@ -33,7 +33,7 @@ dialogue_histories: Dict[int, List[Dict[str, str]]] = defaultdict(list)
 async def lifespan(app: FastAPI):
     global rag_instance, abbreviations, link_searcher
     rag_instance = await initialize_rag()
-    link_searcher = LinkSearcher(urls_path=settings.urls_path, lightrag_instance=rag_instance, top_k=TOP_K)
+    link_searcher = LinkSearcher(urls_path=settings.urls_path, lightrag_instance=rag_instance, top_k=TOP_K, max_links=settings.max_links)
     try:
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
