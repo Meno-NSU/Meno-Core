@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # RAG
     working_dir: Path
     abbreviations_file: Path
+    
+    # LINKS
+    urls_path: Path
+    max_links: int = 3
 
     class Config:
         env_file = ".env"
