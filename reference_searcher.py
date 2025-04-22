@@ -4,6 +4,9 @@ from typing import List, Dict
 import numpy as np
 from nltk import wordpunct_tokenize
 from sentence_transformers import SentenceTransformer
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ReferenceSearcher:
@@ -16,11 +19,11 @@ class ReferenceSearcher:
             urls_file: str,
             model_name: str = 'all-MiniLM-L6-v2',
             threshold: float = 0.75,
+            max_links: int = 3,
             device: str = None
     ):
-        # Порог косинусного сходства
         self.threshold = threshold
-        # Инициализация модели
+        self.max_links = max_links
         self.model = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
         # Загрузка и нормализация ключей URL
         self._load_urls(urls_file)
@@ -37,15 +40,18 @@ class ReferenceSearcher:
             )
             self.titles.append(key)
             self.urls_map[key] = url
+        logger.info(f"Загружено {len(self.titles)} ссылок из {urls_file}")
 
     def _compute_embeddings(self):
         # encode + normalize векторы: cosine(a,b)=dot(a,b)
+        logger.info(f"Вычисление эмбеддингов для {len(self.titles)} заголовков ссылок...")
         embeds = self.model.encode(
             self.titles,
             convert_to_numpy=True,
             normalize_embeddings=True
         )  # shape (N, D)
         self.embeds = embeds
+        logger.info(f"Вычислены эмбеддинги, размер: {self.embeds.shape}")
 
     def search(self, raw_titles: List[str]) -> List[List[str]]:
         """
@@ -54,6 +60,7 @@ class ReferenceSearcher:
         """
         results: List[List[str]] = []
         for raw_title in raw_titles:
+            logger.info(f"Поиск ссылок для заголовка: '{raw_title}'")
             # нормализуем так же, как и при загрузке
             key = ' '.join(
                 filter(str.isalnum, wordpunct_tokenize(raw_title.lower()))
@@ -63,13 +70,14 @@ class ReferenceSearcher:
             q_emb = q_emb / np.linalg.norm(q_emb, keepdims=True)
             # все косинусы сразу через матричное умножение
             sims = self.embeds @ q_emb[0]
-            # отбираем индексы, где сходство >= threshold
-            idxs = np.where(sims >= self.threshold)[0]
-            # сортировка по убыванию сходства
-            idxs = idxs[np.argsort(-sims[idxs])]
-            # собираем URL в порядке релевантности
-            urls = [self.urls_map[self.titles[i]] for i in idxs]
-            results.append(urls)
+            sorted_idxs = np.argsort(-sims)
+            selected = []
+            for idx in sorted_idxs:
+                if sims[idx] < self.threshold or len(selected) >= self.max_links:
+                    break
+                selected.append(self.urls_map[self.titles[idx]])
+            logger.info(f"Найдено {len(selected)} ссылок для '{raw_title}': {selected}")
+            results.append(selected)
         return results
 
     def replace_references(self, llm_answer: str) -> str:
@@ -78,21 +86,25 @@ class ReferenceSearcher:
         реальными ссылками из ref_searcher; если не найдено —
         возвращает текст без блока ссылок.
         """
+        logger.info(f"Замена ссылок в ответе: {llm_answer!r}")
         prefix = 'Ссылки:\n1. '
         idx = llm_answer.rfind(prefix)
         if idx >= 0:
             base = llm_answer[:idx].strip()
         else:
+            logger.info("Нет блока 'Ссылки:'; возвращён оригинальный ответ модели.")
             return llm_answer.strip()
 
         raw_titles = extract_reference_titles(llm_answer)
         if not raw_titles:
+            logger.info("Ни одной ссылки не было извлечено; возвращён оригинальный ответ модели.")
             return base
 
         urls_lists = self.search(raw_titles)
         flat = [u for sublist in urls_lists for u in sublist]
         flat = list(dict.fromkeys(flat))
         if not flat:
+            logger.info("Ни одной ссылки не было найдено; возвращён оригинальный ответ модели.")
             return base
 
         result = base + "\n\nПолезные ссылки:"
