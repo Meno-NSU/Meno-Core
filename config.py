@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
 from pathlib import Path
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -14,7 +15,7 @@ class Settings(BaseSettings):
     # RAG
     working_dir: Path
     abbreviations_file: Path
-    
+
     # LINKS
     urls_path: Path
     max_links: int = 3
