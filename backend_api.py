@@ -1,7 +1,7 @@
 import codecs
 import json
 from contextlib import asynccontextmanager
-from typing import Literal, Annotated
+from typing import Literal
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -11,7 +11,6 @@ from lightrag.lightrag import QueryParam
 
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations
-from link_searcher import LinkSearcher
 import logging
 
 from collections import defaultdict
@@ -31,9 +30,8 @@ dialogue_histories: Dict[int, List[Dict[str, str]]] = defaultdict(list)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rag_instance, abbreviations, link_searcher
+    global rag_instance, abbreviations
     rag_instance = await initialize_rag()
-    link_searcher = LinkSearcher(urls_path=settings.urls_path, lightrag_instance=rag_instance, top_k=TOP_K, max_links=settings.max_links)
     try:
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
@@ -47,7 +45,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 rag_instance = None
-link_searcher = None
 abbreviations = {}
 
 
@@ -73,7 +70,7 @@ class ResetResponse(BaseModel):
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     print(f"Получен запрос от {request.chat_id}: {request.message}")
-    global rag_instance, link_searcher
+    global rag_instance
 
     if rag_instance is None:
         raise RuntimeError("RAG is not initialized.")
@@ -102,12 +99,11 @@ async def chat(request: ChatRequest):
             ),
             system_prompt=SYSTEM_PROMPT_FOR_MENO
         )
-        response_text_with_links = await link_searcher.get_formated_answer(query, response_text)
         dialogue_histories[chat_id].append({"role": "user", "content": query})
         dialogue_histories[chat_id].append({"role": "assistant", "content": response_text})
-        logger.info(f"Ответ сформирован для {chat_id}: {response_text_with_links}")
+        logger.info(f"Ответ сформирован для {chat_id}: {response_text}")
 
-        return ChatResponse(chat_id=request.chat_id, response=response_text_with_links)
+        return ChatResponse(chat_id=request.chat_id, response=response_text)
     except Exception as e:
         logger.exception(f"Error while processing request from user {request.chat_id}")
         return ChatResponse(chat_id=request.chat_id, response="Произошла ошибка при обработке запроса.")
