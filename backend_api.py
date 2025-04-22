@@ -14,6 +14,7 @@ from config import settings
 from lightrag import QueryParam
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, URLS_FNAME, prepare_references
+from reference_searcher import ReferenceSearcher, extract_reference_titles, replace_references
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
 
@@ -29,19 +30,13 @@ dialogue_histories: Dict[int, List[Dict[str, str]]] = defaultdict(list)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rag_instance, abbreviations, urls
+    global rag_instance, abbreviations, ref_searcher
     rag_instance = await initialize_rag()
+    ref_searcher = ReferenceSearcher(URLS_FNAME, model_name='all-MiniLM-L6-v2', threshold=0.75)
     try:
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
             logger.info(f"📚 Загружено сокращений: {len(abbreviations)}")
-        with codecs.open(URLS_FNAME, mode='r', encoding='utf-8') as fp:
-            urls_ = json.load(fp)
-        urls = dict()
-        for k in urls_:
-            k_new = ' '.join(list(filter(lambda x: x.isalnum(), wordpunct_tokenize(k.lower()))))
-            urls[k_new] = urls_[k]
-        logger.info(f"Загружено ссылок: {len(urls)}")
     except Exception as e:
         logger.exception("Не удалось загрузить файл сокращений")
 
@@ -105,7 +100,7 @@ async def chat(request: ChatRequest):
             ),
             system_prompt=SYSTEM_PROMPT_FOR_MENO
         )
-        answer = prepare_references(response_text, urls)
+        answer = ref_searcher.replace_references(response_text)
         dialogue_histories[chat_id].append({"role": "user", "content": query})
         dialogue_histories[chat_id].append({"role": "assistant", "content": answer})
         logger.info(f"Ответ сформирован для {chat_id}: {answer}")

@@ -10,10 +10,10 @@ from nltk import SnowballStemmer, wordpunct_tokenize
 from transformers import AutoTokenizer, AutoModel
 
 from config import settings
-from lightrag.lightrag import LightRAG
-from lightrag.lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
-from lightrag.lightrag.llm.openai import openai_complete_if_cache
-from lightrag.lightrag.utils import EmbeddingFunc
+from lightrag import LightRAG
+from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
+from lightrag.llm.openai import openai_complete_if_cache
+from lightrag.utils import EmbeddingFunc
 
 TEMPERATURE = 0.3
 QUERY_MAX_TOKENS = 4000
