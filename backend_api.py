@@ -7,13 +7,13 @@ from typing import List, Dict
 from typing import Literal
 
 from fastapi import FastAPI
+from nltk import wordpunct_tokenize
 from pydantic import BaseModel
 
 from config import settings
-from lightrag.lightrag import QueryParam
-from link_searcher import LinkSearcher
+from lightrag import QueryParam
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations
+    explain_abbreviations, URLS_FNAME, prepare_references
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
 
@@ -29,14 +29,19 @@ dialogue_histories: Dict[int, List[Dict[str, str]]] = defaultdict(list)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rag_instance, abbreviations, link_searcher
+    global rag_instance, abbreviations, urls
     rag_instance = await initialize_rag()
-    link_searcher = LinkSearcher(urls_path=settings.urls_path, lightrag_instance=rag_instance, top_k=TOP_K,
-                                 max_links=settings.max_links)
     try:
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
             logger.info(f"📚 Загружено сокращений: {len(abbreviations)}")
+        with codecs.open(URLS_FNAME, mode='r', encoding='utf-8') as fp:
+            urls_ = json.load(fp)
+        urls = dict()
+        for k in urls_:
+            k_new = ' '.join(list(filter(lambda x: x.isalnum(), wordpunct_tokenize(k.lower()))))
+            urls[k_new] = urls_[k]
+        logger.info(f"Загружено ссылок: {len(urls)}")
     except Exception as e:
         logger.exception("Не удалось загрузить файл сокращений")
 
@@ -46,7 +51,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 rag_instance = None
-link_searcher = None
 abbreviations = {}
 
 
@@ -101,12 +105,12 @@ async def chat(request: ChatRequest):
             ),
             system_prompt=SYSTEM_PROMPT_FOR_MENO
         )
-        response_text_with_links = await link_searcher.get_formated_answer(query, response_text)
+        answer = prepare_references(response_text, urls)
         dialogue_histories[chat_id].append({"role": "user", "content": query})
-        dialogue_histories[chat_id].append({"role": "assistant", "content": response_text})
-        logger.info(f"Ответ сформирован для {chat_id}: {response_text_with_links}")
+        dialogue_histories[chat_id].append({"role": "assistant", "content": answer})
+        logger.info(f"Ответ сформирован для {chat_id}: {answer}")
 
-        return ChatResponse(chat_id=request.chat_id, response=response_text_with_links)
+        return ChatResponse(chat_id=request.chat_id, response=answer)
     except Exception as e:
         logger.exception(f"Error while processing request from user {request.chat_id}")
         return ChatResponse(chat_id=request.chat_id, response="Произошла ошибка при обработке запроса.")
