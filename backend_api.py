@@ -7,14 +7,13 @@ from typing import List, Dict
 from typing import Literal
 
 from fastapi import FastAPI
-from nltk import wordpunct_tokenize
 from pydantic import BaseModel
 
 from config import settings
 from lightrag import QueryParam
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, URLS_FNAME, prepare_references
-from reference_searcher import ReferenceSearcher, extract_reference_titles, replace_references
+    explain_abbreviations, URLS_FNAME
+from reference_searcher import ReferenceSearcher
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
 
