@@ -73,9 +73,11 @@ class ReferenceSearcher:
             sorted_idxs = np.argsort(-sims)
             selected = []
             for idx in sorted_idxs:
-                if sims[idx] < self.threshold or len(selected) >= self.max_links:
+                if sims[idx] < self.threshold:
                     break
                 selected.append(self.urls_map[self.titles[idx]])
+                if len(selected) >= self.max_links:
+                    break
             logger.info(f"Найдено {len(selected)} ссылок для '{raw_title}': {selected}")
             results.append(selected)
         return results
@@ -101,14 +103,18 @@ class ReferenceSearcher:
             return base
 
         urls_lists = self.search(raw_titles)
-        flat = [u for sublist in urls_lists for u in sublist]
-        flat = list(dict.fromkeys(flat))
-        if not flat:
+        flat = []
+        for sub in urls_lists:
+            for u in sub:
+                if u not in flat:
+                    flat.append(u)
+        capped = flat[:self.max_links]
+        if not capped:
             logger.info("Ни одной ссылки не было найдено; возвращён оригинальный ответ модели.")
             return base
 
         result = base + "\n\nПолезные ссылки:"
-        for u in flat:
+        for u in capped:
             result += f"\n- {u}"
         return result
 
