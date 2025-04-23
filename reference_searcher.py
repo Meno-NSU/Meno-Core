@@ -18,7 +18,7 @@ class ReferenceSearcher:
             self,
             urls_file: str,
             model_name: str = 'all-MiniLM-L6-v2',
-            threshold: float = 0.75,
+            threshold: float = 0.85,
             max_links: int = 3,
             device: str = None
     ):
