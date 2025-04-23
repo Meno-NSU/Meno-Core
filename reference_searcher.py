@@ -1,5 +1,5 @@
 import json
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 import numpy as np
 from nltk import wordpunct_tokenize
@@ -24,6 +24,7 @@ class ReferenceSearcher:
     ):
         self.threshold = threshold
         self.max_links = max_links
+        logger.info(f"Initializing SentenceTransformer(model_name={model_name}, device={device})")
         self.model = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
         # Загрузка и нормализация ключей URL
         self._load_urls(urls_file)
@@ -53,6 +54,42 @@ class ReferenceSearcher:
         self.embeds = embeds
         logger.info(f"Вычислены эмбеддинги, размер: {self.embeds.shape}")
 
+    def _embed_query(self, raw_title: str) -> Tuple[np.ndarray, str]:
+        """Возвращает нормализованный эмбеддинг и ключ"""
+        key = ' '.join(filter(str.isalnum, wordpunct_tokenize(raw_title.lower())))
+        q_emb = self.model.encode([key], convert_to_numpy=True)
+        q_emb = q_emb / np.linalg.norm(q_emb, keepdims=True)
+        return q_emb[0], key
+
+    def get_top_links(self, raw_titles: List[str]) -> List[str]:
+        """
+        Для списка заголовков возвращает до self.max_links наиболее релевантных URL
+        по глобальному ранжированию косинусного сходства.
+        """
+        scored: List[Tuple[str, float]] = []
+        for raw_title in raw_titles:
+            logger.info(f"Scoring links for title: '{raw_title}'")
+            q_emb, key = self._embed_query(raw_title)
+            sims = self.embeds @ q_emb
+            # собираем только те, что выше порога
+            for idx, score in enumerate(sims):
+                if score >= self.threshold:
+                    url = self.urls_map[self.titles[idx]]
+                    scored.append((url, float(score)))
+        if not scored:
+            return []
+        # сортируем по убыванию score, убираем дубликаты, сохраняя порядок
+        scored.sort(key=lambda x: -x[1])
+        seen = set()
+        top_urls = []
+        for url, score in scored:
+            if url not in seen:
+                seen.add(url)
+                top_urls.append(url)
+            if len(top_urls) >= self.max_links:
+                break
+        logger.info(f"Top {self.max_links} URLs: {top_urls}")
+        return top_urls
     def search(self, raw_titles: List[str]) -> List[List[str]]:
         """
         Для каждого заголовка из списка возвращает список URL,
@@ -85,39 +122,26 @@ class ReferenceSearcher:
     def replace_references(self, llm_answer: str) -> str:
         """
         Вырезает блок 'Ссылки:' из llm_answer и заменяет его
-        реальными ссылками из ref_searcher; если не найдено —
-        возвращает текст без блока ссылок.
+        реальными top_links; если не найдено — возвращает текст без блока ссылок.
         """
-        logger.info(f"Замена ссылок в ответе: {llm_answer!r}")
+        logger.info(f"replace_references called with answer: {llm_answer!r}")
         prefix = 'Ссылки:\n1. '
         idx = llm_answer.rfind(prefix)
         if idx >= 0:
             base = llm_answer[:idx].strip()
         else:
-            logger.info("Нет блока 'Ссылки:'; возвращён оригинальный ответ модели.")
             return llm_answer.strip()
 
         raw_titles = extract_reference_titles(llm_answer)
-        if not raw_titles:
-            logger.info("Ни одной ссылки не было извлечено; возвращён оригинальный ответ модели.")
-            return base
-
-        urls_lists = self.search(raw_titles)
-        flat = []
-        for sub in urls_lists:
-            for u in sub:
-                if u not in flat:
-                    flat.append(u)
-        capped = flat[:self.max_links]
-        if not capped:
-            logger.info("Ни одной ссылки не было найдено; возвращён оригинальный ответ модели.")
+        logger.info(f"Extracted reference titles: {raw_titles}")
+        top_urls = self.get_top_links(raw_titles)
+        if not top_urls:
             return base
 
         result = base + "\n\nПолезные ссылки:"
-        for u in capped:
+        for u in top_urls:
             result += f"\n- {u}"
         return result
-
 
 def extract_reference_titles(llm_answer: str) -> List[str]:
     """
@@ -150,28 +174,3 @@ def extract_reference_titles(llm_answer: str) -> List[str]:
         counter += 1
 
     return titles
-
-# ===== Пример интеграции в backend_api.py =====
-#
-# from reference_search import ReferenceSearcher
-#
-# ref_searcher: ReferenceSearcher = None
-#
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     global ref_searcher
-#     # ... предыдущая инициализация rag, аббревиатур и т.д.
-#     ref_searcher = ReferenceSearcher(URLS_FNAME, model_name='all-MiniLM-L6-v2', threshold=0.75)
-#
-#     yield
-#
-# @app.post("/chat", response_model=ChatResponse)
-# async def chat(request: ChatRequest):
-#     # ... до запроса к RAG
-#     response_text = await rag_instance.aquery(...)
-#     # извлекаем заголовки ссылок из текста LLM
-#     titles = extract_reference_titles(response_text)
-#     # получаем URL-списки
-#     urls_lists = ref_searcher.search(titles)
-#     # дальше форматируем ответ, объединяя URL
-#     # ...
