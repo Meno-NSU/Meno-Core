@@ -5,7 +5,6 @@ import numpy as np
 import openai
 import torch
 import torch.nn.functional as F
-from fuzzywuzzy import process
 from nltk import SnowballStemmer, wordpunct_tokenize
 from transformers import AutoTokenizer, AutoModel
 
@@ -105,6 +104,18 @@ FEWSHOTS_FOR_ANAPHORA = [
 
 # ---------- LLM wrapper ----------
 async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs) -> str:
+    """
+    Функция для взаимодействия с языковой моделью (LLM).
+
+    Аргументы:
+    - prompt (str): Пользовательский запрос.
+    - system_prompt (str, optional): Системный запрос для настройки поведения модели.
+    - history_messages (list, optional): История сообщений для контекста.
+    - **kwargs: Дополнительные параметры для настройки запроса.
+
+    Возвращает:
+    - str: Ответ, сгенерированный языковой моделью.
+    """
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -125,6 +136,16 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
 
 
 async def explain_abbreviations(question: str, abbreviations: dict) -> str:
+    """
+    Обрабатывает вопрос пользователя, заменяя аббревиатуры на их расшифровки.
+
+    Аргументы:
+    - question (str): Вопрос пользователя.
+    - abbreviations (dict): Словарь аббревиатур и их расшифровок.
+
+    Возвращает:
+    - str: Вопрос с заменёнными аббревиатурами или исходный вопрос, если аббревиатуры не найдены.
+    """
     snow_stemmer = SnowballStemmer(language='russian')
     filtered_abbreviations = dict()
     for cur_word in wordpunct_tokenize(question):
@@ -163,6 +184,16 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
 
 
 async def resolve_anaphora(question: str, history: list) -> str:
+    """
+    Обрабатывает вопрос пользователя, устраняя местоимённую анафору.
+
+    Аргументы:
+    - question (str): Вопрос пользователя.
+    - history (list): История диалога в виде списка сообщений.
+
+    Возвращает:
+    - str: Вопрос с устранённой анафорой или исходный вопрос, если анафора не обнаружена.
+    """
     if (len(history) == 0) or (len(question.strip()) == 0):
         return question
     if (len(history) % 2) != 0:
