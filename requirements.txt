@@ -8,3 +8,14 @@ tqdm
 transformers
 fuzzywuzzy
 pandas
+requests
+python-dotenv
+sentence-transformers
+networkx
+protobuf
+starlette
+torch
+aiohttp
+httpx
+setuptools
+nltk
