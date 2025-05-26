@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from config import settings
-from lightrag import QueryParam
+from lightrag import QueryParam, LightRAG
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, URLS_FNAME
 from reference_searcher import ReferenceSearcher
@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
-dialogue_histories: Dict[int, List[Dict[str, str]]] = defaultdict(list)
+dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
 
 @asynccontextmanager
@@ -44,26 +44,26 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-rag_instance = None
+rag_instance: LightRAG
 abbreviations = {}
 
 
 class ChatRequest(BaseModel):
-    chat_id: int
+    chat_id: str
     message: str
 
 
 class ChatResponse(BaseModel):
-    chat_id: int
+    chat_id: str
     response: str
 
 
 class ResetRequest(BaseModel):
-    chat_id: int
+    chat_id: str
 
 
 class ResetResponse(BaseModel):
-    chat_id: int
+    chat_id: str
     status: str
 
 
