@@ -314,8 +314,8 @@ async def initialize_rag() -> LightRAG:
         emb_model: AutoModel = AutoModel.from_pretrained(
             LOCAL_EMBEDDER_NAME,
             trust_remote_code=True,
-            device_map='cuda:0'
-            # device_map='cpu'
+            # device_map='cuda:0'
+            device_map='cpu'
         )
         emb_model.eval()
         logger.info("Model loaded successfully")
