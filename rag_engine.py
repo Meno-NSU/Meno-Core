@@ -110,7 +110,7 @@ FEWSHOTS_FOR_ANAPHORA = [
 #         logging.StreamHandler()
 #     ]
 # )
-# logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 #
 # lightrag_logger = logging.getLogger('lightrag')
 # lightrag_logger.setLevel(logging.WARNING)  # или logging.DEBUG для подробных логов
