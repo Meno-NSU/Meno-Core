@@ -102,14 +102,14 @@ FEWSHOTS_FOR_ANAPHORA = [
     {'role': 'assistant', 'content': 'А когда приём документов в НГУ заканчивается?'},
 ]
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('meno_errors.log'),
-        logging.StreamHandler()
-    ]
-)
+# logging.basicConfig(
+#     level=logging.DEBUG,
+#     format='%(asctime)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         logging.FileHandler('meno_errors.log'),
+#         logging.StreamHandler()
+#     ]
+# )
 logger = logging.getLogger(__name__)
 
 
