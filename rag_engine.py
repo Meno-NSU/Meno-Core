@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import List
 
@@ -101,6 +102,16 @@ FEWSHOTS_FOR_ANAPHORA = [
     {'role': 'assistant', 'content': 'А когда приём документов в НГУ заканчивается?'},
 ]
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('meno_errors.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 
 # ---------- LLM wrapper ----------
 async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs) -> str:
@@ -116,23 +127,31 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
     Возвращает:
     - str: Ответ, сгенерированный языковой моделью.
     """
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages += history_messages
-    messages.append({"role": "user", "content": prompt})
+    try:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages += history_messages
+        messages.append({"role": "user", "content": prompt})
 
-    client = openai.AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url
-    )
+        logger.info(f"Sending request to LLM with {len(messages)} messages, prompt: {prompt}")
 
-    completion = await client.chat.completions.create(
-        model=settings.llm_model_name,
-        messages=messages,
-        temperature=TEMPERATURE,
-    )
-    return completion.choices[0].message.content
+        client = openai.AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url
+        )
+
+        completion = await client.chat.completions.create(
+            model=settings.llm_model_name,
+            messages=messages,
+            temperature=TEMPERATURE,
+        )
+        response = completion.choices[0].message.content
+        logger.info(f"Received response from LLM, length: {len(response)}")
+        return response
+    except Exception as e:
+        logger.error(f"Error in llm_model_func: {str(e)}", exc_info=True)
+        raise
 
 
 async def explain_abbreviations(question: str, abbreviations: dict) -> str:
@@ -146,31 +165,35 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
     Возвращает:
     - str: Вопрос с заменёнными аббревиатурами или исходный вопрос, если аббревиатуры не найдены.
     """
-    snow_stemmer = SnowballStemmer(language='russian')
-    filtered_abbreviations = dict()
-    for cur_word in wordpunct_tokenize(question):
-        if cur_word in abbreviations:
-            filtered_abbreviations[cur_word] = abbreviations[cur_word]
-        elif cur_word.lower() in abbreviations:
-            filtered_abbreviations[cur_word] = abbreviations[cur_word.lower()]
-        elif cur_word.upper() in abbreviations:
-            filtered_abbreviations[cur_word] = abbreviations[cur_word.upper()]
-        else:
-            stem = snow_stemmer.stem(cur_word)
-            if stem in abbreviations:
-                filtered_abbreviations[cur_word] = abbreviations[stem]
-            elif stem.lower() in abbreviations:
-                filtered_abbreviations[cur_word] = abbreviations[stem.lower()]
-            elif stem.upper() in abbreviations:
-                filtered_abbreviations[cur_word] = abbreviations[stem.upper()]
-    del snow_stemmer
-    if len(filtered_abbreviations) == 0:
-        return question
-    user_prompt = TEMPLATE_FOR_ABBREVIATION_EXPLAINING.format(
-        abbreviations_dict=filtered_abbreviations,
-        text_of_question=question
-    )
     try:
+        snow_stemmer = SnowballStemmer(language='russian')
+        filtered_abbreviations = dict()
+        for cur_word in wordpunct_tokenize(question):
+            if cur_word in abbreviations:
+                filtered_abbreviations[cur_word] = abbreviations[cur_word]
+            elif cur_word.lower() in abbreviations:
+                filtered_abbreviations[cur_word] = abbreviations[cur_word.lower()]
+            elif cur_word.upper() in abbreviations:
+                filtered_abbreviations[cur_word] = abbreviations[cur_word.upper()]
+            else:
+                stem = snow_stemmer.stem(cur_word)
+                if stem in abbreviations:
+                    filtered_abbreviations[cur_word] = abbreviations[stem]
+                elif stem.lower() in abbreviations:
+                    filtered_abbreviations[cur_word] = abbreviations[stem.lower()]
+                elif stem.upper() in abbreviations:
+                    filtered_abbreviations[cur_word] = abbreviations[stem.upper()]
+        del snow_stemmer
+        if len(filtered_abbreviations) == 0:
+            logger.debug("No abbreviations found in question")
+            return question
+
+        logger.debug(f"Found abbreviations: {filtered_abbreviations}")
+
+        user_prompt = TEMPLATE_FOR_ABBREVIATION_EXPLAINING.format(
+            abbreviations_dict=filtered_abbreviations,
+            text_of_question=question
+        )
         new_improved_question = await openai_complete_if_cache(
             settings.llm_model_name,
             user_prompt,
@@ -178,9 +201,11 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
             base_url=settings.openai_base_url,
             temperature=TEMPERATURE
         )
-    except:
-        new_improved_question = question
-    return new_improved_question
+        logger.debug(f"Improved question: {new_improved_question}")
+        return new_improved_question
+    except Exception as e:
+        logger.error(f"Error in explain_abbreviations: {str(e)}", exc_info=True)
+        return question
 
 
 async def resolve_anaphora(question: str, history: list) -> str:
@@ -194,31 +219,32 @@ async def resolve_anaphora(question: str, history: list) -> str:
     Возвращает:
     - str: Вопрос с устранённой анафорой или исходный вопрос, если анафора не обнаружена.
     """
-    if (len(history) == 0) or (len(question.strip()) == 0):
-        return question
-    if (len(history) % 2) != 0:
-        raise RuntimeError(f'The dialogue history length is wrong! Expected an even number, got {len(history)}.')
-    expected_roles = ['user', 'assistant']
-    for _ in range((len(history) // 2) - 1):
-        expected_roles += ['user', 'assistant']
-    history_roles = [it['role'] for it in history]
-    if history_roles != expected_roles:
-        raise RuntimeError(f'The dialogue history roles are wrong! Expected {expected_roles}, got {history_roles}.')
-    if len(history) > 6:
-        history_ = history[-6:]
-    else:
-        history_ = history
-    user_prompt = f'Человек: {" ".join(history_[0]["content"].split()).strip()}'
-    user_prompt += f'\nБольшая языковая модель: : {" ".join(history_[1]["content"].split()).strip()}'
-    for val in history_[2:]:
-        if val['role'] == 'user':
-            user_prompt += '\nЧеловек: '
-        else:
-            user_prompt += '\nБольшая языковая модель: '
-        user_prompt += ' '.join(val['content'].split()).strip()
-    del history_
-    user_prompt += '\nЧеловек: ' + ' '.join(question.split()).strip()
     try:
+        logger.debug(f"Resolving anaphora for question: {question}")
+        if (len(history) == 0) or (len(question.strip()) == 0):
+            return question
+        if (len(history) % 2) != 0:
+            raise RuntimeError(f'The dialogue history length is wrong! Expected an even number, got {len(history)}.')
+        expected_roles = ['user', 'assistant']
+        for _ in range((len(history) // 2) - 1):
+            expected_roles += ['user', 'assistant']
+        history_roles = [it['role'] for it in history]
+        if history_roles != expected_roles:
+            raise RuntimeError(f'The dialogue history roles are wrong! Expected {expected_roles}, got {history_roles}.')
+        if len(history) > 6:
+            history_ = history[-6:]
+        else:
+            history_ = history
+        user_prompt = f'Человек: {" ".join(history_[0]["content"].split()).strip()}'
+        user_prompt += f'\nБольшая языковая модель: : {" ".join(history_[1]["content"].split()).strip()}'
+        for val in history_[2:]:
+            if val['role'] == 'user':
+                user_prompt += '\nЧеловек: '
+            else:
+                user_prompt += '\nБольшая языковая модель: '
+            user_prompt += ' '.join(val['content'].split()).strip()
+        del history_
+        user_prompt += '\nЧеловек: ' + ' '.join(question.split()).strip()
         question_without_anaphora = await openai_complete_if_cache(
             settings.llm_model_name,
             user_prompt,
@@ -228,64 +254,89 @@ async def resolve_anaphora(question: str, history: list) -> str:
             base_url=settings.openai_base_url,
             temperature=TEMPERATURE
         )
-    except:
-        question_without_anaphora = question
-    return question_without_anaphora
+        logger.debug(f"Question after anaphora resolution: {question_without_anaphora}")
+        return question_without_anaphora
+    except Exception as e:
+        logger.error(f"Error in resolve_anaphora: {str(e)}", exc_info=True)
+        return question
 
 
 # ---------- Embedding function ----------
 async def gte_hf_embed(texts: List[str], tokenizer, embed_model) -> np.ndarray:
-    device = next(embed_model.parameters()).device
-    encoded_texts = tokenizer(
-        texts, return_tensors='pt', padding=True, truncation=True
-    ).to(device)
-    batch_dict = tokenizer(
-        texts, return_tensors='pt',
-        max_length=LOCAL_EMBEDDER_MAX_TOKENS, padding=True, truncation=True,
-    ).to(device)
-    with torch.no_grad():
-        outputs = embed_model(**batch_dict)
-        embeddings = F.normalize(
-            outputs.last_hidden_state[:, 0][:LOCAL_EMBEDDER_DIMENSION],
-            p=2, dim=1
-        )
-    if embeddings.dtype == torch.bfloat16:
-        return embeddings.detach().to(torch.float32).cpu().numpy()
-    else:
-        return embeddings.detach().cpu().numpy()
-
-
-# ---------- RAG initialization ----------
-async def initialize_rag():
-    emb_tokenizer = AutoTokenizer.from_pretrained(
-        LOCAL_EMBEDDER_NAME
-    )
-    ENCODER = emb_tokenizer
-    emb_model = AutoModel.from_pretrained(
-        LOCAL_EMBEDDER_NAME,
-        trust_remote_code=True,
-        device_map='cuda:0'
-        # device_map='cpu'
-    )
-    emb_model.eval()
-
-    initialize_share_data()
-    await initialize_pipeline_status()
-    rag = LightRAG(
-        working_dir=WORKING_DIR,
-        llm_model_func=llm_model_func,
-        cosine_better_than_threshold=0.1,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=LOCAL_EMBEDDER_DIMENSION,
-            max_token_size=LOCAL_EMBEDDER_MAX_TOKENS,
-            func=lambda texts: gte_hf_embed(
-                texts,
-                tokenizer=emb_tokenizer,
-                embed_model=emb_model
+    try:
+        device = next(embed_model.parameters()).device
+        batch_dict = tokenizer(
+            texts, return_tensors='pt',
+            max_length=LOCAL_EMBEDDER_MAX_TOKENS, padding=True, truncation=True,
+        ).to(device)
+        with torch.no_grad():
+            outputs = embed_model(**batch_dict)
+            embeddings = F.normalize(
+                outputs.last_hidden_state[:, 0][:LOCAL_EMBEDDER_DIMENSION],
+                p=2, dim=1
             )
-        ),
-        addon_params={'language': 'Russian'}
-    )
-    await rag.initialize_storages()
+        if embeddings.dtype == torch.bfloat16:
+            result = embeddings.detach().to(torch.float32).cpu().numpy()
+        else:
+            result = embeddings.detach().cpu().numpy()
 
-    return rag
+        logger.info("Embeddings generated successfully")
+        return result
+    except Exception as e:
+        logger.error(f"Error in gte_hf_embed: {str(e)}", exc_info=True)
+        raise
+
+
+async def initialize_rag() -> LightRAG:
+    """
+    Инициализирует объект LightRAG.
+
+    Функция создаёт токенизатор и модель для эмбеддингов, а также настраивает объект LightRAG с необходимыми параметрами.
+
+    Возвращает:
+        LightRAG: Инициализированный объект LightRAG.
+    """
+    try:
+        logger.info("Initializing RAG system")
+        logger.info("Loading tokenizer and embedder model...")
+        emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
+            LOCAL_EMBEDDER_NAME
+        )
+        ENCODER: AutoTokenizer = emb_tokenizer
+        emb_model: AutoModel = AutoModel.from_pretrained(
+            LOCAL_EMBEDDER_NAME,
+            trust_remote_code=True,
+            device_map='cuda:0'
+            # device_map='cpu'
+        )
+        emb_model.eval()
+        logger.info("Model loaded successfully")
+
+        logger.info("Initializing shared data and pipeline status...")
+        initialize_share_data()
+        await initialize_pipeline_status()
+
+        logger.info("Creating LightRAG instance...")
+        rag: LightRAG = LightRAG(
+            working_dir=WORKING_DIR,
+            llm_model_func=llm_model_func,
+            cosine_better_than_threshold=0.1,
+            embedding_func=EmbeddingFunc(
+                embedding_dim=LOCAL_EMBEDDER_DIMENSION,
+                max_token_size=LOCAL_EMBEDDER_MAX_TOKENS,
+                func=lambda texts: gte_hf_embed(
+                    texts,
+                    tokenizer=emb_tokenizer,
+                    embed_model=emb_model
+                )
+            ),
+            addon_params={'language': 'Russian'}
+        )
+        logger.info("Initializing RAG storages...")
+        await rag.initialize_storages()
+        logger.info("RAG system initialized successfully")
+
+        return rag
+    except Exception as e:
+        logger.error(f"Error initializing RAG: {str(e)}", exc_info=True)
+        raise
