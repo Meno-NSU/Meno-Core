@@ -120,7 +120,7 @@ logger = logging.getLogger(__name__)
 # handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 # lightrag_logger.addHandler(handler)
 
-setup_logger("light_rag_log", "DEBUG", False, "/workspace/data/tmp_dir_project/Meno-Core/light_rag_log.log")
+setup_logger("light_rag_log", "WARNING", False, "/workspace/data/tmp_dir_project/Meno-Core/light_rag_log.log")
 
 
 # ---------- LLM wrapper ----------
