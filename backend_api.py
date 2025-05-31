@@ -15,7 +15,7 @@ from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS,
     explain_abbreviations, URLS_FNAME, LOCAL_EMBEDDER_NAME
 from reference_searcher import ReferenceSearcher
 
-QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "hybrid"
+QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "mix"
 
 logging.basicConfig(
     level=logging.DEBUG,
