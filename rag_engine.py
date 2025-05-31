@@ -308,14 +308,15 @@ async def initialize_rag() -> LightRAG:
         logger.info("Initializing RAG system")
         logger.info("Loading tokenizer and embedder model...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_EMBEDDER_NAME
+            LOCAL_EMBEDDER_NAME, local_files_only=True
         )
         ENCODER: AutoTokenizer = emb_tokenizer
         emb_model: AutoModel = AutoModel.from_pretrained(
             LOCAL_EMBEDDER_NAME,
             trust_remote_code=True,
             # device_map='cuda:0'
-            device_map='cpu'
+            device_map='cpu',
+            local_files_only=True
         )
         emb_model.eval()
         logger.info("Model loaded successfully")
