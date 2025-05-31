@@ -329,7 +329,7 @@ async def initialize_rag() -> LightRAG:
         rag: LightRAG = LightRAG(
             working_dir=WORKING_DIR,
             llm_model_func=llm_model_func,
-            cosine_better_than_threshold=0.1,
+            cosine_better_than_threshold=0.05,
             embedding_func=EmbeddingFunc(
                 embedding_dim=LOCAL_EMBEDDER_DIMENSION,
                 max_token_size=LOCAL_EMBEDDER_MAX_TOKENS,
