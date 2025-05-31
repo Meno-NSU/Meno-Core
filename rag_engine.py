@@ -13,7 +13,7 @@ from config import settings
 from lightrag import LightRAG
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
 from lightrag.llm.openai import openai_complete_if_cache
-from lightrag.utils import EmbeddingFunc
+from lightrag.utils import EmbeddingFunc, setup_logger
 
 TEMPERATURE = 0.3
 QUERY_MAX_TOKENS = 4000
@@ -110,15 +110,17 @@ FEWSHOTS_FOR_ANAPHORA = [
 #         logging.StreamHandler()
 #     ]
 # )
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
+#
+# lightrag_logger = logging.getLogger('lightrag')
+# lightrag_logger.setLevel(logging.WARNING)  # или logging.DEBUG для подробных логов
+#
+# # Добавьте обработчик для вывода в консоль
+# handler = logging.StreamHandler()
+# handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+# lightrag_logger.addHandler(handler)
 
-lightrag_logger = logging.getLogger('lightrag')
-lightrag_logger.setLevel(logging.WARNING)  # или logging.DEBUG для подробных логов
-
-# Добавьте обработчик для вывода в консоль
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-lightrag_logger.addHandler(handler)
+setup_logger("light_rag_log", "DEBUG", False, "light_rag_log.log")
 
 
 # ---------- LLM wrapper ----------
