@@ -288,7 +288,7 @@ async def gte_hf_embed(texts: List[str], tokenizer, embed_model) -> np.ndarray:
         else:
             result = embeddings.detach().cpu().numpy()
 
-        logger.info("Embeddings generated successfully")
+        logger.info(f"Embeddings for {texts} generated successfully")
         return result
     except Exception as e:
         logger.error(f"Error in gte_hf_embed: {str(e)}", exc_info=True)
