@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from config import settings
 from lightrag import QueryParam, LightRAG
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, URLS_FNAME
+    explain_abbreviations, URLS_FNAME, LOCAL_EMBEDDER_NAME
 from reference_searcher import ReferenceSearcher
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "hybrid"
@@ -31,7 +31,7 @@ dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 async def lifespan(app: FastAPI):
     global rag_instance, abbreviations, ref_searcher
     rag_instance = await initialize_rag()
-    ref_searcher = ReferenceSearcher(URLS_FNAME, model_name='all-MiniLM-L6-v2', threshold=0.75)
+    ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     try:
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)

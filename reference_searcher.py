@@ -1,10 +1,10 @@
 import json
+import logging
 from typing import List, Dict, Tuple
 
 import numpy as np
 from nltk import wordpunct_tokenize
 from sentence_transformers import SentenceTransformer
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class ReferenceSearcher:
         """Возвращает нормализованный эмбеддинг и ключ"""
         key = ' '.join(filter(str.isalnum, wordpunct_tokenize(raw_title.lower())))
         q_emb = self.model.encode([key], convert_to_numpy=True)
-        q_emb = q_emb / np.linalg.norm(q_emb, keepdims=True)
+        q_emb /= np.linalg.norm(q_emb, keepdims=True)
         return q_emb[0], key
 
     def get_top_links(self, raw_titles: List[str]) -> List[str]:
@@ -90,6 +90,7 @@ class ReferenceSearcher:
                 break
         logger.info(f"Top {self.max_links} URLs: {top_urls}")
         return top_urls
+
     def search(self, raw_titles: List[str]) -> List[List[str]]:
         """
         Для каждого заголовка из списка возвращает список URL,
@@ -104,7 +105,7 @@ class ReferenceSearcher:
             )
             # эмбеддинг и нормализация
             q_emb = self.model.encode([key], convert_to_numpy=True)
-            q_emb = q_emb / np.linalg.norm(q_emb, keepdims=True)
+            q_emb /= np.linalg.norm(q_emb, keepdims=True)
             # все косинусы сразу через матричное умножение
             sims = self.embeds @ q_emb[0]
             sorted_idxs = np.argsort(-sims)
@@ -142,6 +143,7 @@ class ReferenceSearcher:
         for u in top_urls:
             result += f"\n- {u}"
         return result
+
 
 def extract_reference_titles(llm_answer: str) -> List[str]:
     """
