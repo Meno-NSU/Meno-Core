@@ -82,10 +82,10 @@ async def chat(request: ChatRequest):
         history = dialogue_histories[chat_id][-4:]
 
         expanded_query = await explain_abbreviations(query, abbreviations)
-        logger.info(f"После expand_abbr: {expanded_query}")
+        logger.info(f"Query after expanding abbreviations: {expanded_query}")
 
         resolved_query = await resolve_anaphora(expanded_query, history)
-        logger.info(f"После разрешения анафор: {resolved_query}")
+        logger.info(f"Query after resolving anaphora: {resolved_query}")
 
         response_text = await rag_instance.aquery(
             resolved_query,
