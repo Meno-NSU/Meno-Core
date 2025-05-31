@@ -3,8 +3,10 @@ import logging
 from typing import List, Dict, Tuple
 
 import numpy as np
+import torch
 from nltk import wordpunct_tokenize
-from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModel
+import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +26,20 @@ class ReferenceSearcher:
     ):
         self.threshold = threshold
         self.max_links = max_links
-        logger.info(f"Initializing SentenceTransformer(model_name={model_name}, device={device})")
-        self.model = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
+        self.device = device
+        logger.info(f"Initializing AutoModel(model_name={model_name}, device={device}) for reference search...")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name,
+                                                       trust_remote_code=True,
+                                                       # device_map='cuda:0'
+                                                       device_map='cpu',
+                                                       local_files_only=True)
+        self.model = AutoModel.from_pretrained(model_name,
+                                               trust_remote_code=True,
+                                               # device_map='cuda:0'
+                                               device_map='cpu',
+                                               local_files_only=True).to(device)
+        self.model.eval()
+        # self.model = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
         # Загрузка и нормализация ключей URL
         self._load_urls(urls_file)
         # Предварительный расчёт эмбеддингов всех ключей
@@ -44,22 +58,55 @@ class ReferenceSearcher:
         logger.info(f"Загружено {len(self.titles)} ссылок из {urls_file}")
 
     def _compute_embeddings(self):
-        # encode + normalize векторы: cosine(a,b)=dot(a,b)
         logger.info(f"Вычисление эмбеддингов для {len(self.titles)} заголовков ссылок...")
-        embeds = self.model.encode(
-            self.titles,
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        )  # shape (N, D)
-        self.embeds = embeds
+
+        # Токенизация и получение эмбеддингов
+        with torch.no_grad():
+            inputs = self.tokenizer(
+                self.titles,
+                padding=True,
+                truncation=True,
+                return_tensors="pt"
+            ).to(self.device)
+
+            outputs = self.model(**inputs)
+            # Используем mean pooling для получения эмбеддингов предложений
+            embeddings = self._mean_pooling(outputs, inputs['attention_mask'])
+            # Нормализация
+            embeddings = F.normalize(embeddings, p=2, dim=1)
+
+        self.embeds = embeddings.cpu().numpy()
         logger.info(f"Вычислены эмбеддинги, размер: {self.embeds.shape}")
+
+    def _mean_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output.last_hidden_state
+        input_mask_expanded = (
+            attention_mask
+            .unsqueeze(-1)
+            .expand(token_embeddings.size())
+            .float()
+        )
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(
+            input_mask_expanded.sum(1), min=1e-9)
 
     def _embed_query(self, raw_title: str) -> Tuple[np.ndarray, str]:
         """Возвращает нормализованный эмбеддинг и ключ"""
         key = ' '.join(filter(str.isalnum, wordpunct_tokenize(raw_title.lower())))
-        q_emb = self.model.encode([key], convert_to_numpy=True)
-        q_emb /= np.linalg.norm(q_emb, keepdims=True)
-        return q_emb[0], key
+
+        with torch.no_grad():
+            inputs = self.tokenizer(
+                [key],
+                padding=True,
+                truncation=True,
+                return_tensors="pt"
+            ).to(self.device)
+
+            outputs = self.model(**inputs)
+            # Mean pooling и нормализация
+            q_emb = self._mean_pooling(outputs, inputs['attention_mask'])
+            q_emb = F.normalize(q_emb, p=2, dim=1)
+
+        return q_emb[0].cpu().numpy(), key
 
     def get_top_links(self, raw_titles: List[str]) -> List[str]:
         """
@@ -76,8 +123,10 @@ class ReferenceSearcher:
                 if score >= self.threshold:
                     url = self.urls_map[self.titles[idx]]
                     scored.append((url, float(score)))
+
         if not scored:
             return []
+
         # сортируем по убыванию score, убираем дубликаты, сохраняя порядок
         scored.sort(key=lambda x: -x[1])
         seen = set()
@@ -88,6 +137,7 @@ class ReferenceSearcher:
                 top_urls.append(url)
             if len(top_urls) >= self.max_links:
                 break
+
         logger.info(f"Top {self.max_links} URLs: {top_urls}")
         return top_urls
 

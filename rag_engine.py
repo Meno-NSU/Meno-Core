@@ -270,7 +270,7 @@ async def resolve_anaphora(question: str, history: list) -> str:
 
 
 # ---------- Embedding function ----------
-async def gte_hf_embed(texts: List[str], tokenizer, embed_model) -> np.ndarray:
+async def gte_hf_embed(texts: List[str], tokenizer, embed_model: AutoModel) -> np.ndarray:
     try:
         device = next(embed_model.parameters()).device
         batch_dict = tokenizer(
