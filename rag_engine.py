@@ -112,6 +112,14 @@ FEWSHOTS_FOR_ANAPHORA = [
 # )
 logger = logging.getLogger(__name__)
 
+lightrag_logger = logging.getLogger('lightrag')
+lightrag_logger.setLevel(logging.WARNING)  # или logging.DEBUG для подробных логов
+
+# Добавьте обработчик для вывода в консоль
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+lightrag_logger.addHandler(handler)
+
 
 # ---------- LLM wrapper ----------
 async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs) -> str:
