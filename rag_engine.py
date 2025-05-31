@@ -48,7 +48,7 @@ SYSTEM_PROMPT_FOR_MENO = """---Role---
 {history}
 
 ---Document Chunks---
-{% if content_data %}{content_data}{% else %}Не найдено подходящих документов для ответа.{% endif %}
+{content_data}
 
 ---Response Rules---
 
