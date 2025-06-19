@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from config import settings
 from lightrag import QueryParam, LightRAG
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, URLS_FNAME
+    explain_abbreviations, URLS_FNAME, get_current_period
 from reference_searcher import ReferenceSearcher
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
@@ -87,6 +87,13 @@ async def chat(request: ChatRequest):
         resolved_query = await resolve_anaphora(expanded_query, history)
         logger.info(f"После разрешения анафор: {resolved_query}")
 
+        current_date_str = await get_current_period()
+        formatted_system_prompt = SYSTEM_PROMPT_FOR_MENO.replace(
+            "{current_date}", 
+            current_date_str
+        )
+        logger.info(f"Formatted system prompt: {formatted_system_prompt}")
+
         response_text = await rag_instance.aquery(
             resolved_query,
             param=QueryParam(
@@ -97,7 +104,7 @@ async def chat(request: ChatRequest):
                 max_token_for_local_context=QUERY_MAX_TOKENS,
                 history_turns=len(history)
             ),
-            system_prompt=SYSTEM_PROMPT_FOR_MENO
+            system_prompt=formatted_system_prompt  
         )
         answer = ref_searcher.replace_references(response_text)
         dialogue_histories[chat_id].append({"role": "user", "content": query})

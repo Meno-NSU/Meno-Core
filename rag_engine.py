@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 from nltk import SnowballStemmer, wordpunct_tokenize
 from transformers import AutoTokenizer, AutoModel
+from datetime import datetime
 
 from config import settings
 from lightrag import LightRAG
@@ -41,7 +42,7 @@ SYSTEM_PROMPT_FOR_MENO = """---Role---
 2. При столкновении с противоречивой информацией учитывайте как контент, так и временную метку.
 3. Не следует автоматически предпочитать самый последний контент - используйте суждение на основе контекста.
 4. Для запросов, связанных со временем, приоритизируйте временную информацию в контенте перед учетом временных меток создания.
-5. Считайте, что сейчас - конец марта 2025 года.
+5. Считайте, что сейчас - {current_date}.
 
 ---Conversation History---
 {history}
@@ -289,3 +290,26 @@ async def initialize_rag():
     await rag.initialize_storages()
 
     return rag
+
+
+# ---------- Date string generation ----------
+async def get_current_period():
+    today = datetime.now()
+    day = today.day
+    month = today.month
+    year = today.year
+    
+    month_names = {
+        1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+        5: "мая", 6: "июня", 7: "июля", 8: "августа",
+        9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+    }
+    
+    if 1 <= day <= 10:
+        period = "начало"
+    elif 11 <= day <= 20:
+        period = "середина"
+    else:
+        period = "конец"
+    
+    return f"{period} {month_names[month]} {year} года"
