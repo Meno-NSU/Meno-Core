@@ -5,6 +5,8 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import List, Dict
 from typing import Literal
+import pytz
+from datetime import datetime
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -14,6 +16,9 @@ from lightrag import QueryParam, LightRAG
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, URLS_FNAME, get_current_period
 from reference_searcher import ReferenceSearcher
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
 
@@ -26,12 +31,31 @@ logger = logging.getLogger(__name__)
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
+async def clear_rag_cache():
+    """Clear LightRAG cache"""
+    try:
+        current_time = datetime.now(pytz.timezone("Asia/Novosibirsk"))
+        logger.info(f"⏰ Clearing cache at: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+        
+        await rag_instance.aclear_cache()
+        logger.info("✅ LightRAG cache cleared successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to clear cache: {str(e)}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rag_instance, abbreviations, ref_searcher
+    global rag_instance, abbreviations, ref_searcher, scheduler
     rag_instance = await initialize_rag()
     ref_searcher = ReferenceSearcher(URLS_FNAME, model_name='all-MiniLM-L6-v2', threshold=0.75)
+    scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
+    # Clear cache daily at 00:00
+    scheduler.add_job(
+        clear_rag_cache,
+        trigger=CronTrigger(hour=0, minute=0),
+        name="clear_rag_cache_daily"
+    )
+    scheduler.start()
+    logger.info("⏰ Cache-clearing scheduler started")
     try:
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
@@ -41,6 +65,9 @@ async def lifespan(app: FastAPI):
 
     yield  # <-- здесь FastAPI продолжает работу
     # Здесь можно вызвать await rag_instance.cleanup(), если нужно
+    # Shutdown scheduler on app exit
+    scheduler.shutdown()
+    logger.info("⏰ Cache-clearing scheduler stopped")
 
 
 app = FastAPI(lifespan=lifespan)
