@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from nltk import SnowballStemmer, wordpunct_tokenize
 from transformers import AutoTokenizer, AutoModel
 from datetime import datetime
+import pytz
 
 from config import settings
 from lightrag import LightRAG
@@ -294,7 +295,7 @@ async def initialize_rag():
 
 # ---------- Date string generation ----------
 async def get_current_period():
-    today = datetime.now()
+    today = datetime.now(pytz.timezone("Asia/Novosibirsk"))
     day = today.day
     month = today.month
     year = today.year
@@ -305,11 +306,20 @@ async def get_current_period():
         9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
     }
     
-    if 1 <= day <= 10:
-        period = "начало"
-    elif 11 <= day <= 20:
-        period = "середина"
+    # Format day with proper suffix for Russian
+    if 11 <= day <= 19:
+        day_str = f"{day}ое"
     else:
-        period = "конец"
+        last_digit = day % 10
+        if last_digit == 1:
+            day_str = f"{day}ое"
+        elif last_digit == 2:
+            day_str = f"{day}ое"
+        elif last_digit == 3:
+            day_str = f"{day}ье"
+        elif last_digit == 4:
+            day_str = f"{day}ое"
+        else:
+            day_str = f"{day}ое"
     
-    return f"{period} {month_names[month]} {year} года"
+    return f"{day_str} {month_names[month]} {year} года"
