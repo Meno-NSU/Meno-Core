@@ -221,6 +221,7 @@ def extract_and_clean(text: str) -> Tuple[List[str], str]:
                 if is_empty_line:
                     j += 1
                     continue
+                is_empty_line = False
                 match = _MARKER_PATTERN.match(lines[j])
                 item_text = lines[j][match.end():].strip()
                 extracted_items.append(item_text)
