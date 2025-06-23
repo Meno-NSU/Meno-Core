@@ -216,6 +216,7 @@ def extract_and_clean(text: str) -> Tuple[List[str], str]:
             j = i + 1
 
             # Extract list items following the title
+            is_empty_line = False
             while j < len(lines) and (_MARKER_PATTERN.match(lines[j]) or (is_empty_line := lines[j].strip() == '')):
                 if is_empty_line:
                     j += 1
