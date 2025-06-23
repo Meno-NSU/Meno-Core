@@ -133,8 +133,8 @@ async def chat(request: ChatRequest):
             ),
             system_prompt=formatted_system_prompt  
         )
-        # answer = ref_searcher.replace_references(response_text)
-        answer = response_text
+        answer = ref_searcher.replace_references(response_text)
+        # answer = response_text
         dialogue_histories[chat_id].append({"role": "user", "content": query})
         dialogue_histories[chat_id].append({"role": "assistant", "content": answer})
         logger.info(f"Ответ сформирован для {chat_id}: {answer}")
