@@ -1,12 +1,21 @@
 import json
+import logging
 from typing import List, Dict, Tuple
+import re
 
 import numpy as np
+import torch
 from nltk import wordpunct_tokenize
-from sentence_transformers import SentenceTransformer
-import logging
+from transformers import AutoTokenizer, AutoModel
+import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+
+
+# Pattern to match the title line, allowing for markdown variations
+_TITLE_PATTERN = re.compile(r'.*Ссылки.*:')
+# Pattern to match list items starting with -, *, +, or numbers (e.g., 1.)
+_MARKER_PATTERN = re.compile(r'^\s*([-*+]|\d+\.)\s*')
 
 
 class ReferenceSearcher:
@@ -24,8 +33,21 @@ class ReferenceSearcher:
     ):
         self.threshold = threshold
         self.max_links = max_links
-        logger.info(f"Initializing SentenceTransformer(model_name={model_name}, device={device})")
-        self.model = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
+        self.device = device
+        logger.info(
+            f"Initializing AutoModel(model_name={model_name}, device={device}) for reference search...")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name,
+                                                       trust_remote_code=True,
+                                                       # device_map='cuda:0'
+                                                       device_map='cpu',
+                                                       local_files_only=True)
+        self.model = AutoModel.from_pretrained(model_name,
+                                               trust_remote_code=True,
+                                               # device_map='cuda:0'
+                                               device_map='cpu',
+                                               local_files_only=True).to(device)
+        self.model.eval()
+        # self.model = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
         # Загрузка и нормализация ключей URL
         self._load_urls(urls_file)
         # Предварительный расчёт эмбеддингов всех ключей
@@ -44,22 +66,57 @@ class ReferenceSearcher:
         logger.info(f"Загружено {len(self.titles)} ссылок из {urls_file}")
 
     def _compute_embeddings(self):
-        # encode + normalize векторы: cosine(a,b)=dot(a,b)
-        logger.info(f"Вычисление эмбеддингов для {len(self.titles)} заголовков ссылок...")
-        embeds = self.model.encode(
-            self.titles,
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        )  # shape (N, D)
-        self.embeds = embeds
+        logger.info(
+            f"Вычисление эмбеддингов для {len(self.titles)} заголовков ссылок...")
+
+        # Токенизация и получение эмбеддингов
+        with torch.no_grad():
+            inputs = self.tokenizer(
+                self.titles,
+                padding=True,
+                truncation=True,
+                return_tensors="pt"
+            ).to(self.device)
+
+            outputs = self.model(**inputs)
+            # Используем mean pooling для получения эмбеддингов предложений
+            embeddings = self._mean_pooling(outputs, inputs['attention_mask'])
+            # Нормализация
+            embeddings = F.normalize(embeddings, p=2, dim=1)
+
+        self.embeds = embeddings.cpu().numpy()
         logger.info(f"Вычислены эмбеддинги, размер: {self.embeds.shape}")
+
+    def _mean_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output.last_hidden_state
+        input_mask_expanded = (
+            attention_mask
+            .unsqueeze(-1)
+            .expand(token_embeddings.size())
+            .float()
+        )
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(
+            input_mask_expanded.sum(1), min=1e-9)
 
     def _embed_query(self, raw_title: str) -> Tuple[np.ndarray, str]:
         """Возвращает нормализованный эмбеддинг и ключ"""
-        key = ' '.join(filter(str.isalnum, wordpunct_tokenize(raw_title.lower())))
-        q_emb = self.model.encode([key], convert_to_numpy=True)
-        q_emb = q_emb / np.linalg.norm(q_emb, keepdims=True)
-        return q_emb[0], key
+        key = ' '.join(
+            filter(str.isalnum, wordpunct_tokenize(raw_title.lower())))
+
+        with torch.no_grad():
+            inputs = self.tokenizer(
+                [key],
+                padding=True,
+                truncation=True,
+                return_tensors="pt"
+            ).to(self.device)
+
+            outputs = self.model(**inputs)
+            # Mean pooling и нормализация
+            q_emb = self._mean_pooling(outputs, inputs['attention_mask'])
+            q_emb = F.normalize(q_emb, p=2, dim=1)
+
+        return q_emb[0].cpu().numpy(), key
 
     def get_top_links(self, raw_titles: List[str]) -> List[str]:
         """
@@ -76,8 +133,10 @@ class ReferenceSearcher:
                 if score >= self.threshold:
                     url = self.urls_map[self.titles[idx]]
                     scored.append((url, float(score)))
+
         if not scored:
             return []
+
         # сортируем по убыванию score, убираем дубликаты, сохраняя порядок
         scored.sort(key=lambda x: -x[1])
         seen = set()
@@ -88,8 +147,10 @@ class ReferenceSearcher:
                 top_urls.append(url)
             if len(top_urls) >= self.max_links:
                 break
+
         logger.info(f"Top {self.max_links} URLs: {top_urls}")
         return top_urls
+
     def search(self, raw_titles: List[str]) -> List[List[str]]:
         """
         Для каждого заголовка из списка возвращает список URL,
@@ -104,7 +165,7 @@ class ReferenceSearcher:
             )
             # эмбеддинг и нормализация
             q_emb = self.model.encode([key], convert_to_numpy=True)
-            q_emb = q_emb / np.linalg.norm(q_emb, keepdims=True)
+            q_emb /= np.linalg.norm(q_emb, keepdims=True)
             # все косинусы сразу через матричное умножение
             sims = self.embeds @ q_emb[0]
             sorted_idxs = np.argsort(-sims)
@@ -115,7 +176,8 @@ class ReferenceSearcher:
                 selected.append(self.urls_map[self.titles[idx]])
                 if len(selected) >= self.max_links:
                     break
-            logger.info(f"Найдено {len(selected)} ссылок для '{raw_title}': {selected}")
+            logger.info(
+                f"Найдено {len(selected)} ссылок для '{raw_title}': {selected}")
             results.append(selected)
         return results
 
@@ -125,52 +187,48 @@ class ReferenceSearcher:
         реальными top_links; если не найдено — возвращает текст без блока ссылок.
         """
         logger.info(f"replace_references called with answer: {llm_answer!r}")
-        prefix = 'Ссылки:\n1. '
-        idx = llm_answer.rfind(prefix)
-        if idx >= 0:
-            base = llm_answer[:idx].strip()
-        else:
-            return llm_answer.strip()
 
-        raw_titles = extract_reference_titles(llm_answer)
+        raw_titles, cleaned_text = extract_and_clean(llm_answer)
         logger.info(f"Extracted reference titles: {raw_titles}")
         top_urls = self.get_top_links(raw_titles)
         if not top_urls:
-            return base
+            return cleaned_text
 
-        result = base + "\n\nПолезные ссылки:"
+        result = cleaned_text + "\n\nПолезные ссылки:"
         for u in top_urls:
             result += f"\n- {u}"
         return result
 
-def extract_reference_titles(llm_answer: str) -> List[str]:
+
+def extract_and_clean(text: str) -> Tuple[List[str], str]:
     """
-    Извлекает из текста секцию с префиксом 'Ссылки:\\n1. ' и возвращает список заголовков.
-    Если блок не найден — возвращает [llm_answer.strip()].
+    Достает все пункты из списка под секцией 'Ссылки:' и убирает всю секцию из текста. Учитывает спец. символы и пустые строки
     """
-    prefix = 'Ссылки:\n1. '
-    idx = llm_answer.rfind(prefix)
-    if idx < 0:
-        # не нашли блок ссылок — возвращаем весь ответ
-        full = llm_answer.strip()
-        return [full] if full else []
 
-    # отрезаем всё до 'Ссылки:\n1. '
-    tail = llm_answer[idx + len(prefix):].strip()
-    titles: List[str] = []
-    counter = 1
+    # Split text into lines
+    lines = text.splitlines()
 
-    while True:
-        next_marker = f'\n{counter + 1}. '
-        next_pos = tail.find(next_marker)
-        if next_pos < 0:
-            # последняя строка
-            titles.append(tail.strip())
-            break
-        # вырезаем заголовок до маркера
-        titles.append(tail[:next_pos].strip())
-        # обрезаем уже прочитанный кусок вместе с номером
-        tail = tail[next_pos + len(next_marker):]
-        counter += 1
+    # Search for the last occurrence of the title from the end
+    for i in range(len(lines) - 1, -1, -1):
+        if _TITLE_PATTERN.search(lines[i]):
+            start = i
+            extracted_items = []
+            j = i + 1
 
-    return titles
+            # Extract list items following the title
+            while j < len(lines) and (_MARKER_PATTERN.match(lines[j]) or (is_empty_line := lines[j].strip() == '')):
+                if is_empty_line:
+                    j += 1
+                    continue
+                match = _MARKER_PATTERN.match(lines[j])
+                item_text = lines[j][match.end():].strip()
+                extracted_items.append(item_text)
+                j += 1
+
+            # Remove the section (title and list items)
+            cleaned_lines = lines[:start] + lines[j:]
+            cleaned_text = '\n'.join(cleaned_lines)
+            return extracted_items, cleaned_text
+
+    # If no title is found, return empty list and original text
+    return [], text
