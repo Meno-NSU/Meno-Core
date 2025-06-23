@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 from nltk import SnowballStemmer, wordpunct_tokenize
 from transformers import AutoTokenizer, AutoModel
+from datetime import datetime
+import pytz
 
 from config import settings
 from lightrag import LightRAG
@@ -42,7 +44,7 @@ SYSTEM_PROMPT_FOR_MENO = """---Role---
 2. При столкновении с противоречивой информацией учитывайте как контент, так и временную метку.
 3. Не следует автоматически предпочитать самый последний контент - используйте суждение на основе контекста.
 4. Для запросов, связанных со временем, приоритизируйте временную информацию в контенте перед учетом временных меток создания.
-5. Считайте, что сейчас - конец марта 2025 года.
+5. Считайте, что сейчас - {current_date}.
 
 ---Conversation History---
 {history}
@@ -351,3 +353,35 @@ async def initialize_rag() -> LightRAG:
     except Exception as e:
         logger.error(f"Error initializing RAG: {str(e)}", exc_info=True)
         raise
+
+
+# ---------- Date string generation ----------
+async def get_current_period():
+    today = datetime.now(pytz.timezone("Asia/Novosibirsk"))
+    day = today.day
+    month = today.month
+    year = today.year
+    
+    month_names = {
+        1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+        5: "мая", 6: "июня", 7: "июля", 8: "августа",
+        9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+    }
+    
+    # Format day with proper suffix for Russian
+    if 11 <= day <= 19:
+        day_str = f"{day}ое"
+    else:
+        last_digit = day % 10
+        if last_digit == 1:
+            day_str = f"{day}ое"
+        elif last_digit == 2:
+            day_str = f"{day}ое"
+        elif last_digit == 3:
+            day_str = f"{day}ье"
+        elif last_digit == 4:
+            day_str = f"{day}ое"
+        else:
+            day_str = f"{day}ое"
+    
+    return f"{day_str} {month_names[month]} {year} года"
