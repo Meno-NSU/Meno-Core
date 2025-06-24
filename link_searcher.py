@@ -21,9 +21,6 @@ class LinkSearcher:
         results = await chunks_vdb.query(query, top_k=self.top_k)
         if not len(results):
             return []
-        for e in results:
-            print(e.keys())
-            break
         chunks_ids = [r["id"] for r in results]
         chunks_distance = [r["distance"] for r in results]
         chunks_metrics = [r["__metrics__"] for r in results]
@@ -34,7 +31,7 @@ class LinkSearcher:
 
         links = set()
         for chunk, dist, metric in zip(chunks, chunks_distance, chunks_metrics):
-            if not chunk or "contnet" not in chunk:
+            if chunk is None or "contnet" not in chunk:
                 continue
             print(chunk.keys(), dist, metric)
             content: str = chunk["content"]
