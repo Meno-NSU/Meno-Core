@@ -5,11 +5,12 @@ import json
 
 class LinkSearcher:
 
-    def __init__(self, urls_path: Path | str, lightrag_instance: LightRAG, top_k: int, max_links: int = 3):
+    def __init__(self, urls_path: Path | str, lightrag_instance: LightRAG, top_k: int, dist_threshold: float, max_links: int = 3):
         self.lightrag_instance = lightrag_instance
         self.top_k = top_k
         urls_path = Path(urls_path)
         self.max_links = max_links
+        self.dist_threshold = dist_threshold
         with urls_path.open(mode='r', encoding='utf-8') as fp:
             self.urls = json.load(fp)
 
@@ -23,17 +24,16 @@ class LinkSearcher:
             return []
         chunks_ids = [r["id"] for r in results]
         chunks_distance = [r["distance"] for r in results]
-        chunks_metrics = [r["__metrics__"] for r in results]
         chunks = await text_chunks_db.get_by_ids(chunks_ids)
         # valid_chunks = [
         #     chunk for chunk in chunks if chunk is not None and "content" in chunk
         # ]
 
         links = set()
-        for chunk, dist, metric in zip(chunks, chunks_distance, chunks_metrics):
-            if chunk is None or "content" not in chunk:
+        for chunk, dist in zip(chunks, chunks_distance):
+            # For some reason distance is metric. The more the better
+            if chunk is None or "content" not in chunk or dist < self.dist_threshold:
                 continue
-            print(chunk.keys(), dist, metric)
             content: str = chunk["content"]
             header = content[:content.find("\n")]
             link = self.urls.get(header)
