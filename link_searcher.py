@@ -31,7 +31,7 @@ class LinkSearcher:
 
         links = set()
         for chunk, dist, metric in zip(chunks, chunks_distance, chunks_metrics):
-            if chunk is None or "contnet" not in chunk:
+            if chunk is None or "content" not in chunk:
                 continue
             print(chunk.keys(), dist, metric)
             content: str = chunk["content"]
