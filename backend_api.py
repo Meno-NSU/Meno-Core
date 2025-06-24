@@ -15,7 +15,8 @@ from config import settings
 from lightrag import QueryParam, LightRAG
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, URLS_FNAME, LOCAL_EMBEDDER_NAME, get_current_period
-from reference_searcher import ReferenceSearcher
+# from reference_searcher import ReferenceSearcher
+from link_searcher import LinkSearcher
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -46,7 +47,8 @@ async def clear_rag_cache():
 async def lifespan(app: FastAPI):
     global rag_instance, abbreviations, ref_searcher, scheduler
     rag_instance = await initialize_rag()
-    ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
+    # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
+    ref_searcher = LinkSearcher(URLS_FNAME, rag_instance, TOP_K)
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     scheduler.add_job(
@@ -133,7 +135,8 @@ async def chat(request: ChatRequest):
             ),
             system_prompt=formatted_system_prompt  
         )
-        answer = ref_searcher.replace_references(response_text)
+        # answer = ref_searcher.replace_references(response_text)
+        answer = ref_searcher.get_formated_answer(resolved_query, response_text)
         # answer = response_text
         dialogue_histories[chat_id].append({"role": "user", "content": query})
         dialogue_histories[chat_id].append({"role": "assistant", "content": answer})
