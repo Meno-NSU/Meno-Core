@@ -40,5 +40,5 @@ class LinkSearcher:
     async def get_formated_answer(self, query: str, answer: str) -> str:
         links = await self.get_links(query)
         if links:
-            return f"{answer}\n\nПолезные ссылки:\n-{'\n-'.join(links[:self.max_links])}"
+            return f"{answer}\n\nПолезные ссылки:\n- {'\n- '.join(links[:self.max_links])}"
         return answer
