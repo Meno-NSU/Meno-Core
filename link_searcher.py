@@ -25,15 +25,19 @@ class LinkSearcher:
             print(e.keys())
             break
         chunks_ids = [r["id"] for r in results]
+        chunks_distance = [r["distance"] for r in results]
+        chunks_metrics = [r["__metrics__"] for r in results]
         chunks = await text_chunks_db.get_by_ids(chunks_ids)
-        valid_chunks = [
-            chunk for chunk in chunks if chunk is not None and "content" in chunk
-        ]
+        # valid_chunks = [
+        #     chunk for chunk in chunks if chunk is not None and "content" in chunk
+        # ]
 
         links = set()
-        for chunk in valid_chunks:
+        for chunk, dist, metric in zip(chunks, chunks_distance, chunks_metrics):
+            if not chunk or "contnet" not in chunk:
+                continue
+            print(chunk.keys(), dist, metric)
             content: str = chunk["content"]
-            print(chunk.keys())
             header = content[:content.find("\n")]
             link = self.urls.get(header)
             if link:
