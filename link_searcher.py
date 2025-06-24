@@ -27,14 +27,15 @@ class LinkSearcher:
             chunk for chunk in chunks if chunk is not None and "content" in chunk
         ]
 
-        links = []
+        links = set()
         for chunk in valid_chunks:
             content: str = chunk["content"]
+            print(chunk.keys())
             header = content[:content.find("\n")]
             link = self.urls.get(header)
             if link:
-                links.append(self.urls[header])
-        return links
+                links.add(self.urls[header])
+        return tuple(links)
 
     async def get_formated_answer(self, query: str, answer: str) -> str:
         links = await self.get_links(query)
