@@ -21,6 +21,9 @@ class LinkSearcher:
         results = await chunks_vdb.query(query, top_k=self.top_k)
         if not len(results):
             return []
+        for e in results:
+            print(e.keys())
+            break
         chunks_ids = [r["id"] for r in results]
         chunks = await text_chunks_db.get_by_ids(chunks_ids)
         valid_chunks = [
