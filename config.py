@@ -17,8 +17,21 @@ class Settings(BaseSettings):
     abbreviations_file: Path
 
     # LINKS
-    urls_path: Path
+    urls_path: Path = Path("resources/validated_urls.json")
     max_links: int = 3
+    top_k: int = 30
+    dist_threshold: float = 0.70
+
+    # EMBEDDER
+    embedder_dim: int = 768
+    embedder_max_tokens: int = 4096
+
+    # LIGHT RAG
+    temperature: float = 0.3
+    query_max_tokens: int = 4000
+
+    # LOGS
+    log_file_path: Path = Path("/light_rag_log.log")
 
     model_config = SettingsConfigDict(
         env_file=".env",

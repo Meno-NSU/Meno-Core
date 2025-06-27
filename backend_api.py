@@ -32,23 +32,27 @@ logger = logging.getLogger(__name__)
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
+
 async def clear_rag_cache():
     """Clear LightRAG cache"""
     try:
         current_time = datetime.now(pytz.timezone("Asia/Novosibirsk"))
-        logger.info(f"⏰ Clearing cache at: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-        
+        logger.info(
+            f"⏰ Clearing cache at: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+
         await rag_instance.aclear_cache()
         logger.info("✅ LightRAG cache cleared successfully")
     except Exception as e:
         logger.error(f"❌ Failed to clear cache: {str(e)}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global rag_instance, abbreviations, ref_searcher, scheduler
     rag_instance = await initialize_rag()
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
-    ref_searcher = LinkSearcher(URLS_FNAME, rag_instance, TOP_K, dist_threshold=0.70)
+    ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,
+                                dist_threshold=settings.dist_threshold, max_links=settings.max_links)
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     scheduler.add_job(
@@ -118,7 +122,7 @@ async def chat(request: ChatRequest):
 
         current_date_str = await get_current_period()
         formatted_system_prompt = SYSTEM_PROMPT_FOR_MENO.replace(
-            "{current_date}", 
+            "{current_date}",
             current_date_str
         )
         logger.info(f"Formatted system prompt: {formatted_system_prompt}")
@@ -133,18 +137,20 @@ async def chat(request: ChatRequest):
                 max_token_for_local_context=QUERY_MAX_TOKENS,
                 history_turns=len(history)
             ),
-            system_prompt=formatted_system_prompt  
+            system_prompt=formatted_system_prompt
         )
         # answer = ref_searcher.replace_references(response_text)
         answer = await ref_searcher.get_formated_answer(resolved_query, response_text)
         # answer = response_text
         dialogue_histories[chat_id].append({"role": "user", "content": query})
-        dialogue_histories[chat_id].append({"role": "assistant", "content": answer})
+        dialogue_histories[chat_id].append(
+            {"role": "assistant", "content": answer})
         logger.info(f"Ответ сформирован для {chat_id}: {answer}")
 
         return ChatResponse(chat_id=request.chat_id, response=answer)
     except Exception as e:
-        logger.exception(f"Error while processing request from user {request.chat_id}")
+        logger.exception(
+            f"Error while processing request from user {request.chat_id}")
         return ChatResponse(chat_id=request.chat_id, response="Произошла ошибка при обработке запроса.")
 
 
@@ -156,6 +162,7 @@ async def reset_history(request: ResetRequest):
         dialogue_histories.pop(chat_id)
         logger.info(f"История очищена для пользователя {chat_id}")
     else:
-        logger.info(f"Попытка очистки истории: история для пользователя {chat_id} не найдена")
+        logger.info(
+            f"Попытка очистки истории: история для пользователя {chat_id} не найдена")
 
     return ResetResponse(chat_id=chat_id, status="ok")

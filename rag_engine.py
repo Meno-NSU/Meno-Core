@@ -19,12 +19,12 @@ from lightrag.utils import EmbeddingFunc, setup_logger
 
 TEMPERATURE = 0.3
 QUERY_MAX_TOKENS = 4000
-TOP_K = 30
+TOP_K = settings.top_k
 WORKING_DIR = settings.working_dir
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(WORKING_DIR)}')
 ABBREVIATIONS_FNAME = settings.abbreviations_file
 print(f'os.path.isfile({ABBREVIATIONS_FNAME}) = {os.path.isfile(ABBREVIATIONS_FNAME)}')
-URLS_FNAME = 'resources/validated_urls.json'
+URLS_FNAME = str(settings.urls_path)
 print(f'os.path.isfile({URLS_FNAME}) = {os.path.isfile(URLS_FNAME)}')
 LOCAL_EMBEDDER_DIMENSION = 768
 LOCAL_EMBEDDER_MAX_TOKENS = 4096
@@ -121,7 +121,7 @@ logger = logging.getLogger(__name__)
 # handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 # lightrag_logger.addHandler(handler)
 
-setup_logger("light_rag_log", "WARNING", False, "/workspace/data/tmp_dir_project/Meno-Core/light_rag_log.log")
+setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
 
 
 # ---------- LLM wrapper ----------
