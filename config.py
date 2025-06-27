@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     query_max_tokens: int = 4000
 
     # LOGS
-    log_file_path: Path = Path("light_rag_log.log")
+    log_file_path: Path = Path("logs/light_rag_log.log")
 
     model_config = SettingsConfigDict(
         env_file=".env",
