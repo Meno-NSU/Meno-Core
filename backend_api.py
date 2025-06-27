@@ -17,6 +17,7 @@ from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS,
     explain_abbreviations, URLS_FNAME, LOCAL_EMBEDDER_NAME, get_current_period
 # from reference_searcher import ReferenceSearcher
 from link_searcher import LinkSearcher
+from lightrag.utils import setup_logger
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -49,6 +50,7 @@ async def clear_rag_cache():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global rag_instance, abbreviations, ref_searcher, scheduler
+    setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
     rag_instance = await initialize_rag()
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,

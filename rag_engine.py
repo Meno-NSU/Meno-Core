@@ -121,9 +121,6 @@ logger = logging.getLogger(__name__)
 # handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 # lightrag_logger.addHandler(handler)
 
-setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
-
-
 # ---------- LLM wrapper ----------
 async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs) -> str:
     """
