@@ -17,6 +17,7 @@ from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS,
     explain_abbreviations, URLS_FNAME, LOCAL_EMBEDDER_NAME, get_current_period
 # from reference_searcher import ReferenceSearcher
 from link_searcher import LinkSearcher
+from link_correcter import LinkCorrecter
 from lightrag.utils import setup_logger
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -49,12 +50,13 @@ async def clear_rag_cache():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rag_instance, abbreviations, ref_searcher, scheduler
+    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler
     setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
     rag_instance = await initialize_rag()
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,
                                 dist_threshold=settings.dist_threshold, max_links=settings.max_links)
+    ref_corrector = LinkCorrecter(rag_instance, settings.correct_dist_threshold)
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     scheduler.add_job(
@@ -142,6 +144,7 @@ async def chat(request: ChatRequest):
             system_prompt=formatted_system_prompt
         )
         # answer = ref_searcher.replace_references(response_text)
+        answer = await ref_corrector.replace_markdown_links(response_text)
         answer = await ref_searcher.get_formated_answer(resolved_query, response_text)
         # answer = response_text
         dialogue_histories[chat_id].append({"role": "user", "content": query})

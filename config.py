@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     max_links: int = 3
     top_k: int = 30
     dist_threshold: float = 0.70
+    correct_dist_threshold: float = 0.1
 
     # EMBEDDER
     embedder_dim: int = 768
