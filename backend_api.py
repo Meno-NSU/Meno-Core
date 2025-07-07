@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,
                                 dist_threshold=settings.dist_threshold, max_links=settings.max_links)
-    ref_corrector = LinkCorrecter(rag_instance, settings.correct_dist_threshold)
+    ref_corrector = LinkCorrecter(settings.urls_path, settings.correct_dist_threshold)
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     scheduler.add_job(
