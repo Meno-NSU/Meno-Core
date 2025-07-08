@@ -147,10 +147,11 @@ async def chat(request: ChatRequest):
             system_prompt=formatted_system_prompt
         )
         # answer = ref_searcher.replace_references(response_text)
+        answer = response_text
         if settings.enable_links_correction:
-            answer = await ref_corrector.replace_markdown_links(response_text)
+            answer = await ref_corrector.replace_markdown_links(answer)
         if settings.enable_links_addition:
-            answer = await ref_searcher.get_formated_answer(resolved_query, response_text)
+            answer = await ref_searcher.get_formated_answer(resolved_query, answer)
         # answer = response_text
         dialogue_histories[chat_id].append({"role": "user", "content": query})
         dialogue_histories[chat_id].append(
