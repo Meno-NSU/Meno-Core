@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     abbreviations_file: Path
 
     # LINKS
+    enable_links_addition: bool = True
+    enable_links_corretion: bool = True
     urls_path: Path = Path("resources/validated_urls.json")
     max_links: int = 3
     top_k: int = 30

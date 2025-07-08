@@ -8,6 +8,7 @@ from typing import Literal
 import pytz
 from datetime import datetime
 
+import config
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -54,9 +55,11 @@ async def lifespan(app: FastAPI):
     setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
     rag_instance = await initialize_rag()
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
-    ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,
-                                dist_threshold=settings.dist_threshold, max_links=settings.max_links)
-    ref_corrector = LinkCorrecter(settings.urls_path, settings.correct_dist_threshold)
+    if settings.enable_links_addition:
+        ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,
+                                    dist_threshold=settings.dist_threshold, max_links=settings.max_links)
+    if settings.enable_links_corretion:
+        ref_corrector = LinkCorrecter(settings.urls_path, settings.correct_dist_threshold)
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     scheduler.add_job(
@@ -144,8 +147,10 @@ async def chat(request: ChatRequest):
             system_prompt=formatted_system_prompt
         )
         # answer = ref_searcher.replace_references(response_text)
-        answer = await ref_corrector.replace_markdown_links(response_text)
-        answer = await ref_searcher.get_formated_answer(resolved_query, response_text)
+        if settings.enable_links_corretion:
+            answer = await ref_corrector.replace_markdown_links(response_text)
+        if settings.enable_links_addition:
+            answer = await ref_searcher.get_formated_answer(resolved_query, response_text)
         # answer = response_text
         dialogue_histories[chat_id].append({"role": "user", "content": query})
         dialogue_histories[chat_id].append(
