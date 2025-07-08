@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     if settings.enable_links_addition:
         ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,
                                     dist_threshold=settings.dist_threshold, max_links=settings.max_links)
-    if settings.enable_links_corretion:
+    if settings.enable_links_correction:
         ref_corrector = LinkCorrecter(settings.urls_path, settings.correct_dist_threshold)
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
@@ -147,7 +147,7 @@ async def chat(request: ChatRequest):
             system_prompt=formatted_system_prompt
         )
         # answer = ref_searcher.replace_references(response_text)
-        if settings.enable_links_corretion:
+        if settings.enable_links_correction:
             answer = await ref_corrector.replace_markdown_links(response_text)
         if settings.enable_links_addition:
             answer = await ref_searcher.get_formated_answer(resolved_query, response_text)
