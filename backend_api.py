@@ -24,7 +24,7 @@ from lightrag.utils import setup_logger
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
+QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
 logging.basicConfig(
     level=logging.DEBUG,

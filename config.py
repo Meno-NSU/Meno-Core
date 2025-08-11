@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     # RAG
     working_dir: Path
     abbreviations_file: Path
+    query_mode: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
 
     # LINKS
     enable_links_addition: bool = True
