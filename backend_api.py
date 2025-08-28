@@ -695,11 +695,11 @@ def build_per_question_scoring_prompt(candidates: List[UserQuestion], criteria: 
         "Список вопросов:"
     )
     for i, q in enumerate(candidates, 1):
-        ans = q.answer or ""
+        # ans = q.answer or ""
         lines.append(
             f'{i}) msg_id="{q.msg_id}" | chat_id="{q.chat_id}" | time_utc="{q.created_at_utc.isoformat()}"\n'
             f'   ВОПРОС: {q.content}\n'
-            f'   ОТВЕТ:  {ans}'
+            # f'   ОТВЕТ:  {ans}'
         )
     return "\n".join(lines)
 
