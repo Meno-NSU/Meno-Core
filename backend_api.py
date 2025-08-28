@@ -588,7 +588,7 @@ async def pick_best_question(req: PickBestRequest):
                 system_prompt=final_system_prompt
             )
             logger.info(f"LLM raw answer of scoring query: {final_output_text}")
-            obj = extract_json(final_output_text)
+            obj = extract_json_loose(final_output_text)
             if isinstance(obj, dict):
                 winner_msg_id = obj.get("winner_msg_id")
                 final_reason = obj.get("reason")
@@ -726,16 +726,139 @@ def build_final_selection_prompt(candidates: List[UserQuestion]) -> str:
     return "\n".join(lines)
 
 
-def extract_json(s: str):
-    """достаём первый JSON-массив или объект из текста модели"""
-    try:
-        m = re.search(r"\[\s*\{.*\}\s*\]|\{\s*\".*", s, flags=re.DOTALL)
-        if not m:
-            return None
-        return json.loads(m.group(0))
-    except Exception:
-        logger.exception("Failed to parse JSON from model output")
+# def extract_json(s: str):
+#     """достаём первый JSON-массив или объект из текста модели"""
+#     try:
+#         m = re.search(r"\[\s*\{.*\}\s*\]|\{\s*\".*", s, flags=re.DOTALL)
+#         if not m:
+#             return None
+#         return json.loads(m.group(0))
+#     except Exception:
+#         logger.exception("Failed to parse JSON from model output")
+#         return None
+
+def _strip_code_fences(s: str) -> str:
+    # убираем ```json ... ``` и ``` ... ```
+    s = s.strip()
+    m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, flags=re.DOTALL | re.IGNORECASE)
+    return m.group(1) if m else s
+
+def extract_json_loose(s: str):
+    """
+    Пытается извлечь JSON-объект/массив из произвольной строки.
+    Если это не удаётся (например, пришёл обрезанный массив), то
+    собирает все валидные топ-уровневые объекты {...} и возвращает
+    список таких объектов (отфильтрованных по наличию msg_id/score).
+    Возвращает либо dict/список (если целиком распарсилось),
+    либо список dict’ов (частичный результат),
+    либо None (ничего полезного не нашли).
+    """
+    if not s:
         return None
+
+    s = _strip_code_fences(s)
+
+    # 1) Сначала пробуем «как есть»
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+
+    # 2) Попробуем найти первый валидный JSON-блок ({} или [])
+    def _find_first_balanced_block(text: str):
+        stack = []
+        in_str = False
+        esc = False
+        start = None
+        opener = None  # '{' или '['
+
+        for i, ch in enumerate(text):
+            if in_str:
+                if esc:
+                    esc = False
+                    continue
+                if ch == '\\':
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+
+            if ch == '"':
+                in_str = True
+                continue
+
+            if ch in '{[':
+                if not stack:  # старт верхнего уровня
+                    start = i
+                    opener = ch
+                stack.append(ch)
+            elif ch in '}]':
+                if not stack:
+                    continue
+                top = stack[-1]
+                if (top == '{' and ch == '}') or (top == '[' and ch == ']'):
+                    stack.pop()
+                    if not stack and start is not None:
+                        return text[start:i+1]
+        return None
+
+    block = _find_first_balanced_block(s)
+    if block:
+        try:
+            return json.loads(block)
+        except Exception:
+            pass
+
+    # 3) Фрагментированная выдача: собираем ВСЕ валидные top-level объекты {...}
+    #    Игнорируем вложенные, учитываем кавычки/экранирование.
+    objs_raw = []
+    stack = []
+    in_str = False
+    esc = False
+    start = None
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+                continue
+            if ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        else:
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == '{':
+                if not stack:
+                    start = i
+                stack.append('{')
+            elif ch == '}':
+                if stack:
+                    stack.pop()
+                    if not stack and start is not None:
+                        objs_raw.append(s[start:i+1])
+                        start = None
+
+    parsed = []
+    bad = 0
+    for raw in objs_raw:
+        try:
+            obj = json.loads(raw)
+            # опциональный фильтр «это действительно элемент с оценкой»
+            if isinstance(obj, dict) and ("msg_id" in obj or "score" in obj):
+                parsed.append(obj)
+        except Exception:
+            bad += 1
+
+    if parsed:
+        if bad:
+            logger.warning(f"extract_json_loose: parsed {len(parsed)} objects, skipped {bad} broken chunks.")
+        return parsed
+
+    logger.warning("extract_json_loose: failed to recover any JSON objects.")
+    return None
 
 
 def upsert_scores_into_questions_file(updates: Dict[str, Dict[str, Optional[float]]]) -> int:
