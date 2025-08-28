@@ -4,10 +4,12 @@ import json
 import logging
 import os
 import re
+import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime
+import time
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from typing import Literal
@@ -425,15 +427,37 @@ async def reset_history(request: ResetRequest):
     return ResetResponse(chat_id=chat_id, status="ok")
 
 
+def _snip(s: Optional[str], n: int = 2000) -> str:
+    """Безопасное усечение строк для логов."""
+    if s is None:
+        return "None"
+    if len(s) <= n:
+        return s
+    return f"{s[:n]}… [truncated {len(s) - n} chars]"
+
+
+def _len(s: Optional[str]) -> int:
+    return 0 if s is None else len(s)
+
+
 @app.post("/pick_best_question", response_model=PickBestResponse)
 async def pick_best_question(req: PickBestRequest):
     global rag_instance, _scores_cache
+    req_id = uuid.uuid4().hex[:8]
+    t0 = time.perf_counter()
     try:
         start_utc, end_utc = parse_time_range(req.start, req.end, req.tz)
-
         # 1) читаем кандидатов из файла
         window: List[UserQuestion] = load_questions_window(start_utc, end_utc)
+        logger.info(f"[{req_id}] /pick_best_question: start")
+        logger.info(
+            f"[{req_id}] input: tz={req.tz!r}, start={req.start!r}, end={req.end!r}, "
+            f"limit={req.candidate_limit}, return_candidates_only={req.return_candidates_only}, "
+            f"do_final_llm_selection={req.do_final_llm_selection}"
+        )
+        logger.info(f"[{req_id}] time_range_utc: {start_utc.isoformat()} .. {end_utc.isoformat()}")
         if not window:
+            logger.warning(f"[{req_id}] empty window -> return empty response")
             return PickBestResponse(
                 winner_msg_id=None, winner_content=None,
                 model_reason=None, raw_model_output=None,
@@ -441,11 +465,15 @@ async def pick_best_question(req: PickBestRequest):
             )
 
         # 2) сужаем (если надо)
-        candidates = window[: max(1, req.candidate_limit)]
+        cap = max(1, req.candidate_limit)
+        candidates = window[:cap]
+        logger.info(f"[{req_id}] candidates clipped to: {len(candidates)} (limit={cap})")
 
         # 2a) режим "только кандидаты" — никаких оценок и финального выбора
         if req.return_candidates_only:
+            logger.info(f"[{req_id}] return_candidates_only=True (no scoring/final)")
             candidates_response = []
+            cache_hits = 0
             for idx, q in enumerate(candidates, start=1):
                 # подтянем кеш-оценку «как есть», если вдруг уже есть
                 cinfo = _scores_cache.get(q.msg_id)
@@ -461,6 +489,7 @@ async def pick_best_question(req: PickBestRequest):
                         model_reason=mr
                     )
                 )
+            logger.info(f"[{req_id}] return-only: cache_hits={cache_hits}, returning {len(candidates_response)}")
             return PickBestResponse(
                 winner_msg_id=None, winner_content=None,
                 model_reason=None, raw_model_output=None,
@@ -471,16 +500,29 @@ async def pick_best_question(req: PickBestRequest):
         # 3) оценка КАЖДОГО вопроса — только тех, кого нет в кеше по текущему criteria
         crit_hash = _criteria_hash(req.scoring_criteria)
         need_scoring: List[UserQuestion] = []
+        cache_hits, cache_miss = 0, 0
         for q in candidates:
             entry = _scores_cache.get(q.msg_id)
             if not entry or entry.get("criteria_hash") != crit_hash:
                 need_scoring.append(q)
+                cache_miss += 1
+            else:
+                cache_hits += 1
+        logger.info(
+            f"[{req_id}] criteria_hash={crit_hash}, need_scoring={len(need_scoring)}, "
+            f"cache_hits={cache_hits}, cache_miss={cache_miss}"
+        )
 
         raw_scoring_output = None
         if need_scoring:
             scoring_user_prompt = build_per_question_scoring_prompt(need_scoring, req.scoring_criteria)
             scoring_system_prompt = "Ты строгий судья. Верни только JSON, без комментариев."
+            logger.debug(
+                f"[{req_id}] scoring: prompt_user_len={_len(scoring_user_prompt)}, "
+                f"prompt_sys_len={_len(scoring_system_prompt)}"
+            )
 
+            t_llm = time.perf_counter()
             raw_scoring_output = await rag_instance.aquery(
                 scoring_user_prompt,
                 param=QueryParam(
@@ -492,7 +534,9 @@ async def pick_best_question(req: PickBestRequest):
                 ),
                 system_prompt=scoring_system_prompt
             )
-
+            dt = time.perf_counter() - t_llm
+            logger.info(f"[{req_id}] scoring LLM ok in {dt:.3f}s, out_len={_len(raw_scoring_output)}")
+            logger.debug(f"[{req_id}] scoring LLM out (snip): {_snip(raw_scoring_output, 1500)}")
             parsed_scores = extract_json(raw_scoring_output)
             if isinstance(parsed_scores, list):
                 updated = 0
@@ -549,6 +593,7 @@ async def pick_best_question(req: PickBestRequest):
                 winner_msg_id = obj.get("winner_msg_id")
                 final_reason = obj.get("reason")
         else:
+            logger.info(f"[{req_id}] final selection via heuristic (argmax/fallback)")
             scored = [q for q in candidates if q.model_score is not None]
             if scored:
                 scored.sort(key=lambda x: (x.model_score, x.tokens_est, -x.created_at_utc.timestamp()), reverse=True)
@@ -557,6 +602,7 @@ async def pick_best_question(req: PickBestRequest):
             else:
                 winner_msg_id = candidates[-1].msg_id
                 final_reason = "Fallback to latest question."
+            logger.info(f"[{req_id}] heuristic winner: {winner_msg_id!r}")
 
         winner_content = None
         if winner_msg_id:
@@ -564,7 +610,7 @@ async def pick_best_question(req: PickBestRequest):
                 if q.msg_id == winner_msg_id:
                     winner_content = q.content
                     break
-
+        logger.debug(f"[{req_id}] winner_content_len={_len(winner_content)}; reason_len={_len(final_reason)}")
         # 6) готовим ответ
         candidates_response: List[CandidateItem] = []
         for idx, q in enumerate(candidates, start=1):
@@ -594,12 +640,13 @@ async def pick_best_question(req: PickBestRequest):
                         "model_reason": cinfo.get("reason"),
                     }
                 if updates:
+                    t_up = time.perf_counter()
                     n = upsert_scores_into_questions_file(updates)
-                    logger.info(f"questions.ndjson updated with scores: {n} records")
+                    logger.info(f"[{req_id}] questions.ndjson upsert: {n} records in {time.perf_counter()-t_up:.3f}s")
         except Exception:
-            logger.exception("Failed to upsert scores into questions file")
+            logger.exception(f"[{req_id}] upsert scores failed")
         # ВАЖНО: не пишем обратно «оценённые» q в NDJSON — чтобы не размножать дубликаты
-        return PickBestResponse(
+        resp = PickBestResponse(
             winner_msg_id=winner_msg_id,
             winner_content=winner_content,
             model_reason=final_reason,
@@ -607,9 +654,16 @@ async def pick_best_question(req: PickBestRequest):
             candidates_count=len(candidates),
             candidates=candidates_response
         )
+        total_dt = time.perf_counter() - t0
+        logger.info(
+            f"[{req_id}] done in {total_dt:.3f}s; "
+            f"resp: candidates_count={resp.candidates_count}, "
+            f"raw_model_output_len={_len(resp.raw_model_output)}"
+        )
+        return resp
 
     except Exception:
-        logger.exception("pick_best_question failed")
+        logger.exception(f"[{req_id}] pick_best_question failed (outer)")
         return PickBestResponse(
             winner_msg_id=None,
             winner_content=None,
@@ -680,6 +734,7 @@ def extract_json(s: str):
     except Exception:
         logger.exception("Failed to parse JSON from model output")
         return None
+
 
 def upsert_scores_into_questions_file(updates: Dict[str, Dict[str, Optional[float]]]) -> int:
     """
