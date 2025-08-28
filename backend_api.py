@@ -658,7 +658,7 @@ async def pick_best_question(req: PickBestRequest):
         logger.info(
             f"[{req_id}] done in {total_dt:.3f}s; "
             f"resp: candidates_count={resp.candidates_count}, "
-            f"raw_model_output_len={_len(resp.raw_model_output)}"
+            f"raw_model_output={resp.raw_model_output}"
         )
         return resp
 
