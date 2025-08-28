@@ -537,7 +537,7 @@ async def pick_best_question(req: PickBestRequest):
             dt = time.perf_counter() - t_llm
             logger.info(f"[{req_id}] scoring LLM ok in {dt:.3f}s, out_len={_len(raw_scoring_output)}")
             logger.debug(f"[{req_id}] scoring LLM out (snip): {raw_scoring_output}")
-            parsed_scores = extract_json(raw_scoring_output)
+            parsed_scores = extract_json_loose(raw_scoring_output)
             if isinstance(parsed_scores, list):
                 updated = 0
                 for obj in parsed_scores:
