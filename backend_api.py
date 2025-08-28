@@ -579,7 +579,7 @@ async def pick_best_question(req: PickBestRequest):
             final_output_text = await rag_instance.aquery(
                 final_user_prompt,
                 param=QueryParam(
-                    mode="naive", top_k=0,
+                    mode=QUERY_MODE, top_k=0,
                     max_token_for_text_unit=QUERY_MAX_TOKENS,
                     max_token_for_global_context=QUERY_MAX_TOKENS,
                     max_token_for_local_context=QUERY_MAX_TOKENS,
@@ -587,11 +587,13 @@ async def pick_best_question(req: PickBestRequest):
                 ),
                 system_prompt=final_system_prompt
             )
-
+            logger.info(f"LLM raw answer of scoring query: {final_output_text}")
             obj = extract_json(final_output_text)
             if isinstance(obj, dict):
                 winner_msg_id = obj.get("winner_msg_id")
                 final_reason = obj.get("reason")
+            else:
+                final_reason = final_output_text
         else:
             logger.info(f"[{req_id}] final selection via heuristic (argmax/fallback)")
             scored = [q for q in candidates if q.model_score is not None]
