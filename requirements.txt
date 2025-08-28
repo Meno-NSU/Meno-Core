@@ -19,3 +19,5 @@ aiohttp
 httpx
 setuptools
 nltk
+pytz
+python-dateutil
