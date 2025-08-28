@@ -654,18 +654,18 @@ def build_final_selection_prompt(candidates: List[UserQuestion]) -> str:
     """
     lines = []
     lines.append(
-        "Ниже — список вопросов. Выбери РОВНО ОДИН лучший с точки зрения интересности и актуальности.\n"
+        "Ниже — список вопросов. Выбери РОВНО ОДИН лучший с точки зрения интересности и актуальности для абитуриентов и студентов Новосибирского Государственного Университета.\n"
         'Верни строго JSON объект вида: {"winner_msg_id":"<msg_id>", "reason":"<краткое обоснование>"}\n'
         "Список вопросов:"
     )
     for i, q in enumerate(candidates, 1):
         sc = q.model_score
-        rs = q.model_reason or ""
+        # rs = q.model_reason or ""
         lines.append(
             f'{i}) msg_id="{q.msg_id}" | score={sc if sc is not None else "NA"}\n'
             f'   ВОПРОС: {q.content}\n'
-            f'   ОТВЕТ:  {q.answer or ""}\n'
-            f'   ОБОСН.: {rs}'
+            # f'   ОТВЕТ:  {q.answer or ""}\n'
+            # f'   ОБОСН.: {rs}'
         )
     return "\n".join(lines)
 
