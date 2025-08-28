@@ -1,17 +1,19 @@
 import codecs
 import json
 import logging
+import os
+import re
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime
-from typing import List, Dict, Tuple, re, Optional
+from typing import List, Dict, Tuple, Optional
 from typing import Literal
-from dateutil import parser as dtparser
 
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from dateutil import parser as dtparser
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -35,19 +37,73 @@ logger = logging.getLogger(__name__)
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
+SCORES_CACHE_FILE = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
+
 
 @dataclass
 class UserQuestion:
-    msg_id: str  # уникальный id события (можно chat_id + порядковый номер)
+    msg_id: str  # уникальный id события (chat_id + порядковый номер)
     chat_id: str
     content: str
     created_at_utc: datetime  # always timezone-aware UTC
     tokens_est: int  # грубая оценка длины (для веса)
     is_question: bool
+    answer: Optional[str] = None  # <-- добавлено
+    model_score: Optional[float] = None  # <-- оценка 0..100 (по итогу /pick_best_question)
+    model_reason: Optional[str] = None  # <-- краткое обоснование
 
 
 RECENT_QUESTIONS_BUFFER: deque[UserQuestion] = deque(maxlen=1000)
 all_user_questions: list[UserQuestion] = []
+# Файл-хранилище
+QUESTIONS_FILE = Path(os.getenv("QUESTIONS_FILE", "questions.ndjson"))
+
+
+def _ensure_questions_file():
+    QUESTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not QUESTIONS_FILE.exists():
+        QUESTIONS_FILE.touch()
+
+
+def save_question_to_file(q: UserQuestion) -> None:
+    """Append one record to NDJSON (atomic-like)."""
+    _ensure_questions_file()
+    with QUESTIONS_FILE.open("a", encoding="utf-8") as f:
+        rec = asdict(q).copy()
+        # datetime в iso
+        rec["created_at_utc"] = q.created_at_utc.isoformat()
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def load_questions_window(start_utc: datetime, end_utc: datetime) -> List[UserQuestion]:
+    """Stream read; фильтруем по окну времени."""
+    if not QUESTIONS_FILE.exists():
+        return []
+    out: List[UserQuestion] = []
+    with QUESTIONS_FILE.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+                t = dtparser.parse(obj["created_at_utc"])
+                if start_utc <= t < end_utc:
+                    out.append(UserQuestion(
+                        msg_id=obj["msg_id"],
+                        chat_id=obj["chat_id"],
+                        content=obj["content"],
+                        created_at_utc=t,
+                        tokens_est=obj.get("tokens_est", len(obj["content"])),
+                        is_question=obj.get("is_question", True),
+                        answer=obj.get("answer"),
+                        model_score=obj.get("model_score"),
+                        model_reason=obj.get("model_reason"),
+                    ))
+            except Exception:
+                logger.exception("Failed to parse questions.ndjson line")
+    # по времени
+    out.sort(key=lambda q: q.created_at_utc)
+    return out
 
 
 async def clear_rag_cache():
@@ -167,20 +223,29 @@ class CandidateItem(BaseModel):
     msg_id: str
     chat_id: str
     content: str
+    answer: Optional[str] = None  # <-- добавлено
     created_at_iso: str
     is_question: bool
-    prescore: Optional[float] = None  # None, если прескор не считали
+    prescore: Optional[float] = None
+    model_score: Optional[float] = None  # <-- добавлено
+    model_reason: Optional[str] = None  # <-- добавлено
 
 
 class PickBestRequest(BaseModel):
-    start: str  # напр. "2025-08-27 12:00"
-    end: str  # напр. "2025-08-27 18:00"
+    start: str
+    end: str
     tz: str = "Asia/Novosibirsk"
-    # чтобы не слать в LLM сотни строк — берем топ по нашему скореру и только их отдаём модели
     candidate_limit: int = 200
-    # если хочешь совсем без нашего скорера и просто «как есть» — поставь False
     use_prescoring: bool = False
-    dedupe: bool = False  # влияет на новизну в скорере
+    dedupe: bool = False
+    # новое:
+    scoring_criteria: str = (
+        "- Насколько интересен и полезен вопрос для широкой аудитории;\n"
+        "- Сколько актуальных тем он затрагивает и насколько глубоко;\n"
+        "- Ясность формулировки и конкретика;\n"
+        "- Новизна по сравнению с типичными вопросами."
+    )
+    do_final_llm_selection: bool = True  # если False — победитель = argmax(score)
 
 
 class PickBestResponse(BaseModel):
@@ -252,6 +317,11 @@ async def chat(request: ChatRequest):
         dialogue_histories[chat_id].append(
             {"role": "assistant", "content": answer})
         logger.info(f"Ответ сформирован для {chat_id}: {answer}")
+        try:
+            user_question.answer = answer
+            save_question_to_file(user_question)
+        except Exception:
+            logger.exception("Failed to persist question/answer to file")
 
         return ChatResponse(chat_id=request.chat_id, response=answer)
     except Exception as e:
@@ -277,47 +347,33 @@ async def reset_history(request: ResetRequest):
 @app.post("/pick_best_question", response_model=PickBestResponse)
 async def pick_best_question(req: PickBestRequest):
     """
-    1) фильтруем вопросы по окну [start, end) в req.tz
-    2) (опционально) прескорим и возьмём топ-N кандидатов
-    3) отправим список в LLM с системным промптом "Выбери наилучший вопрос"
-    4) распарсим ответ JSON и вернём msg_id и текст вопроса
+    1) читаем кандидатов из FILE по окну [start, end)
+    2) (опц.) прескорим/сузим до candidate_limit (у тебя выключено по умолчанию)
+    3) просим LLM оценить КАЖДЫЙ вопрос (0..100) по заданным критериям
+    4) доп. финальный выбор победителя одной записью LLM (или argmax)
     """
     global rag_instance
-
     try:
         start_utc, end_utc = parse_time_range(req.start, req.end, req.tz)
 
-        window = [q for q in all_user_questions if start_utc <= q.created_at_utc < end_utc]
+        # --- 1) из файла (персистентный источник)
+        window: List[UserQuestion] = load_questions_window(start_utc, end_utc)
         if not window:
             return PickBestResponse(
-                winner_msg_id=None,
-                winner_content=None,
-                model_reason=None,
-                raw_model_output=None,
-                candidates_count=0,
-                candidates=[],
-            )
-        candidates_list = window[: max(1, req.candidate_limit)]
-        candidates_response: List[CandidateItem] = []
-        for idx, q in enumerate(candidates_list, start=1):
-            candidates_response.append(
-                CandidateItem(rank=idx, msg_id=q.msg_id, chat_id=q.chat_id, content=q.content,
-                              created_at_iso=q.created_at_utc.isoformat(), is_question=q.is_question)
+                winner_msg_id=None, winner_content=None,
+                model_reason=None, raw_model_output=None,
+                candidates_count=0, candidates=[],
             )
 
-        # прескрининг по нашему скореру, чтобы не перегружать контекст
-        candidates: list[UserQuestion]
-        # Без прескора берём просто первые N по времени (или отсортируй как тебе удобно)
-        window.sort(key=lambda q: q.created_at_utc)
+        # --- 2) сузить (если надо)
         candidates = window[: max(1, req.candidate_limit)]
 
-        user_prompt = _build_selection_prompt(candidates)
-        system_prompt = "Выбери наилучший вопрос"
+        # --- 3) оценка КАЖДОГО вопроса (одним батч-промптом)
+        scoring_user_prompt = build_per_question_scoring_prompt(candidates, req.scoring_criteria)
+        scoring_system_prompt = "Ты строгий судья. Верни только JSON, без комментариев."
 
-        # Вызов твоей LLM. Для выбора тут не нужен глобальный/локальный контекст, поэтому режим "naive".
-        # Параметры top_k/макс. токены выставляю минимально необходимыми.
-        llm_output = await rag_instance.aquery(
-            user_prompt,
+        scoring_output = await rag_instance.aquery(
+            scoring_user_prompt,
             param=QueryParam(
                 mode=QUERY_MODE,
                 top_k=0,
@@ -326,35 +382,111 @@ async def pick_best_question(req: PickBestRequest):
                 max_token_for_local_context=QUERY_MAX_TOKENS,
                 history_turns=0,
             ),
-            system_prompt=system_prompt
+            system_prompt=scoring_system_prompt
         )
 
-        # Парсим JSON из ответа модели (очень строго не делаем — но стараемся)
-        winner_msg_id = None
-        model_reason = None
-        try:
-            # модель могла обернуть что-то ещё — попробуем вытащить первый JSON-объект
-            match = re.search(r"\{.*\}", llm_output, flags=re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-                winner_msg_id = data.get("winner_msg_id")
-                model_reason = data.get("reason")
-        except Exception:
-            logger.exception("Failed to parse LLM JSON output")
+        parsed_scores = extract_json(scoring_output)
+        # ожидаем список объектов [{msg_id, score, reason}]
+        if isinstance(parsed_scores, list):
+            reason_map: Dict[str, Tuple[Optional[float], Optional[str]]] = {}
+            for obj in parsed_scores:
+                mid = obj.get("msg_id")
+                sc = obj.get("score")
+                rs = obj.get("reason")
+                try:
+                    if sc is not None:
+                        sc = float(sc)
+                        sc = max(0.0, min(100.0, sc))
+                except Exception:
+                    sc = None
+                if mid:
+                    reason_map[mid] = (sc, rs)
+            # присвоим
+            for q in candidates:
+                if q.msg_id in reason_map:
+                    sc, rs = reason_map[q.msg_id]
+                    q.model_score = sc
+                    q.model_reason = rs
+        else:
+            logger.warning("LLM scoring JSON not parsed; leaving scores as None.")
 
-        # находим текст вопроса по msg_id
+        # --- 4) финальный выбор победителя
+        winner_msg_id = None
+        final_reason = None
+        final_output_text = None
+
+        if req.do_final_llm_selection:
+            final_user_prompt = build_final_selection_prompt(candidates)
+            final_system_prompt = "Выбери наилучший вопрос. Верни только JSON-объект."
+
+            final_output_text = await rag_instance.aquery(
+                final_user_prompt,
+                param=QueryParam(
+                    mode=QUERY_MODE,
+                    top_k=0,
+                    max_token_for_text_unit=QUERY_MAX_TOKENS,
+                    max_token_for_global_context=QUERY_MAX_TOKENS,
+                    max_token_for_local_context=QUERY_MAX_TOKENS,
+                    history_turns=0,
+                ),
+                system_prompt=final_system_prompt
+            )
+
+            obj = extract_json(final_output_text)
+            if isinstance(obj, dict):
+                winner_msg_id = obj.get("winner_msg_id")
+                final_reason = obj.get("reason")
+        else:
+            # argmax по score, tie-breaker: более высокий tokens_est, потом более ранний
+            scored = [q for q in candidates if q.model_score is not None]
+            if scored:
+                scored.sort(key=lambda x: (x.model_score, x.tokens_est, -x.created_at_utc.timestamp()), reverse=True)
+                winner_msg_id = scored[0].msg_id
+                final_reason = "Auto-selected as highest scored question."
+            else:
+                # если нет оценок, fallback — последний по времени
+                winner_msg_id = candidates[-1].msg_id
+                final_reason = "Fallback to latest question."
+
         winner_content = None
         if winner_msg_id:
-            for q in candidates:  # сужаем поиск до кандидатов
+            for q in candidates:
                 if q.msg_id == winner_msg_id:
                     winner_content = q.content
                     break
 
+        # подготовим выдачу кандидатов
+        candidates_response: List[CandidateItem] = []
+        for idx, q in enumerate(candidates, start=1):
+            candidates_response.append(
+                CandidateItem(
+                    rank=idx,
+                    msg_id=q.msg_id,
+                    chat_id=q.chat_id,
+                    content=q.content,
+                    answer=q.answer,
+                    created_at_iso=q.created_at_utc.isoformat(),
+                    is_question=q.is_question,
+                    prescore=None,
+                    model_score=(None if q.model_score is None else round(float(q.model_score), 2)),
+                    model_reason=q.model_reason
+                )
+            )
+
+        # можно сохранить обратно score/reason в файл (append как обновление записи)
+        # Вариант простой: записать «апдейт» отдельной строкой (event sourcing).
+        try:
+            for q in candidates:
+                if (q.model_score is not None) or (q.model_reason):
+                    save_question_to_file(q)
+        except Exception:
+            logger.exception("Failed to append scored records to file")
+
         return PickBestResponse(
             winner_msg_id=winner_msg_id,
             winner_content=winner_content,
-            model_reason=model_reason,
-            raw_model_output=llm_output,
+            model_reason=final_reason,
+            raw_model_output=final_output_text or scoring_output,
             candidates_count=len(candidates),
             candidates=candidates_response
         )
@@ -369,3 +501,65 @@ async def pick_best_question(req: PickBestRequest):
             candidates_count=0,
             candidates=[],
         )
+
+
+def build_per_question_scoring_prompt(candidates: List[UserQuestion], criteria: str) -> str:
+    """
+    Просим модель вернуть JSON-массив объектов:
+    [{"msg_id":"...", "score": 0..100, "reason": "..."}]
+    """
+    lines = []
+    lines.append(
+        "Оцени КАЖДЫЙ из приведённых ниже вопросов по шкале от 0 до 100.\n"
+        "Критерии оценивания:\n"
+        f"{criteria.strip()}\n\n"
+        "Правила:\n"
+        "- Оцени каждый вопрос независимо.\n"
+        "- Строго верни JSON-массив с объектами вида "
+        '{"msg_id":"<msg_id>", "score": <int>, "reason":"<краткое обоснование>"} '
+        "в том же порядке, в каком даны вопросы.\n"
+        "- Не добавляй ничего кроме JSON.\n\n"
+        "Список вопросов:"
+    )
+    for i, q in enumerate(candidates, 1):
+        ans = q.answer or ""
+        lines.append(
+            f'{i}) msg_id="{q.msg_id}" | chat_id="{q.chat_id}" | time_utc="{q.created_at_utc.isoformat()}"\n'
+            f'   ВОПРОС: {q.content}\n'
+            f'   ОТВЕТ:  {ans}'
+        )
+    return "\n".join(lines)
+
+
+def build_final_selection_prompt(candidates: List[UserQuestion]) -> str:
+    """
+    Просим выбрать ровно один winner с краткой причиной; строгий JSON-объект.
+    """
+    lines = []
+    lines.append(
+        "Ниже — список вопросов. Выбери РОВНО ОДИН лучший с точки зрения интересности и актуальности.\n"
+        'Верни строго JSON объект вида: {"winner_msg_id":"<msg_id>", "reason":"<краткое обоснование>"}\n'
+        "Список вопросов:"
+    )
+    for i, q in enumerate(candidates, 1):
+        sc = q.model_score
+        rs = q.model_reason or ""
+        lines.append(
+            f'{i}) msg_id="{q.msg_id}" | score={sc if sc is not None else "NA"}\n'
+            f'   ВОПРОС: {q.content}\n'
+            f'   ОТВЕТ:  {q.answer or ""}\n'
+            f'   ОБОСН.: {rs}'
+        )
+    return "\n".join(lines)
+
+
+def extract_json(s: str):
+    """достаём первый JSON-массив или объект из текста модели"""
+    try:
+        m = re.search(r"\[\s*\{.*\}\s*\]|\{\s*\".*", s, flags=re.DOTALL)
+        if not m:
+            return None
+        return json.loads(m.group(0))
+    except Exception:
+        logger.exception("Failed to parse JSON from model output")
+        return None
