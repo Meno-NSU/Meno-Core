@@ -319,11 +319,11 @@ async def pick_best_question(req: PickBestRequest):
         llm_output = await rag_instance.aquery(
             user_prompt,
             param=QueryParam(
-                mode="naive",
+                mode=QUERY_MODE,
                 top_k=0,
-                max_token_for_text_unit=256,
-                max_token_for_global_context=256,
-                max_token_for_local_context=256,
+                max_token_for_text_unit=QUERY_MAX_TOKENS,
+                max_token_for_global_context=QUERY_MAX_TOKENS,
+                max_token_for_local_context=QUERY_MAX_TOKENS,
                 history_turns=0,
             ),
             system_prompt=system_prompt
