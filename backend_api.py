@@ -1,11 +1,14 @@
 import codecs
+import hashlib
 import json
 import logging
 import os
 import re
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, asdict
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from typing import Literal
 
@@ -22,8 +25,6 @@ from lightrag.utils import setup_logger
 from link_correcter import LinkCorrecter
 # from reference_searcher import ReferenceSearcher
 from link_searcher import LinkSearcher
-from pathlib import Path
-from dataclasses import dataclass, asdict
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, get_current_period
 
@@ -39,6 +40,38 @@ logger = logging.getLogger(__name__)
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
 SCORES_CACHE_FILE = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
+
+_scores_cache: Dict[str, Dict[str, Optional[str]]] = {}
+
+
+def _criteria_hash(criteria: str) -> str:
+    return hashlib.sha256(criteria.strip().encode("utf-8")).hexdigest()
+
+
+def load_scores_cache() -> None:
+    global _scores_cache
+    try:
+        if os.path.exists(SCORES_CACHE_FILE):
+            with open(SCORES_CACHE_FILE, "r", encoding="utf-8") as f:
+                _scores_cache = json.load(f)
+                if not isinstance(_scores_cache, dict):
+                    _scores_cache = {}
+        else:
+            _scores_cache = {}
+        logger.info(f"Scores cache loaded: {len(_scores_cache)} entries")
+    except Exception:
+        logger.exception("Failed to load scores cache")
+        _scores_cache = {}
+
+
+def save_scores_cache() -> None:
+    try:
+        tmp = SCORES_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_scores_cache, f, ensure_ascii=False)
+        os.replace(tmp, SCORES_CACHE_FILE)
+    except Exception:
+        logger.exception("Failed to save scores cache")
 
 
 @dataclass
@@ -77,10 +110,12 @@ def save_question_to_file(q: UserQuestion) -> None:
 
 
 def load_questions_window(start_utc: datetime, end_utc: datetime) -> List[UserQuestion]:
-    """Stream read; фильтруем по окну времени."""
+    """
+    Stream read NDJSON; фильтр по окну времени; collapse по msg_id (последняя запись побеждает).
+    """
     if not QUESTIONS_FILE.exists():
         return []
-    out: List[UserQuestion] = []
+    by_id: Dict[str, UserQuestion] = {}
     with QUESTIONS_FILE.open("r", encoding="utf-8") as f:
         for line in f:
             if not line.strip():
@@ -88,21 +123,24 @@ def load_questions_window(start_utc: datetime, end_utc: datetime) -> List[UserQu
             try:
                 obj = json.loads(line)
                 t = dtparser.parse(obj["created_at_utc"])
-                if start_utc <= t < end_utc:
-                    out.append(UserQuestion(
-                        msg_id=obj["msg_id"],
-                        chat_id=obj["chat_id"],
-                        content=obj["content"],
-                        created_at_utc=t,
-                        tokens_est=obj.get("tokens_est", len(obj["content"])),
-                        is_question=obj.get("is_question", True),
-                        answer=obj.get("answer"),
-                        model_score=obj.get("model_score"),
-                        model_reason=obj.get("model_reason"),
-                    ))
+                if not (start_utc <= t < end_utc):
+                    continue
+                q = UserQuestion(
+                    msg_id=obj["msg_id"],
+                    chat_id=obj["chat_id"],
+                    content=obj["content"],
+                    created_at_utc=t,
+                    tokens_est=obj.get("tokens_est", len(obj["content"])),
+                    is_question=obj.get("is_question", True),
+                    answer=obj.get("answer"),
+                    model_score=obj.get("model_score"),
+                    model_reason=obj.get("model_reason"),
+                )
+                # перезаписываем — так «последняя версия» останется
+                by_id[q.msg_id] = q
             except Exception:
                 logger.exception("Failed to parse questions.ndjson line")
-    # по времени
+    out = list(by_id.values())
     out.sort(key=lambda q: q.created_at_utc)
     return out
 
@@ -125,6 +163,7 @@ async def lifespan(app: FastAPI):
     global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler
     setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
     rag_instance = await initialize_rag()
+    load_scores_cache()
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     if settings.enable_links_addition:
         ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,
@@ -239,14 +278,14 @@ class PickBestRequest(BaseModel):
     candidate_limit: int = 200
     use_prescoring: bool = False
     dedupe: bool = False
-    # новое:
     scoring_criteria: str = (
-        "- Насколько интересен и полезен вопрос для широкой аудитории;\n"
+        "- Насколько интересен и полезен вопрос для студентов и абитуриентов Новосибирского Государственного Университета;\n"
         "- Сколько актуальных тем он затрагивает и насколько глубоко;\n"
         "- Ясность формулировки и конкретика;\n"
         "- Новизна по сравнению с типичными вопросами."
     )
-    do_final_llm_selection: bool = True  # если False — победитель = argmax(score)
+    do_final_llm_selection: bool = True  # если False — winner=argmax(score)
+    return_candidates_only: bool = False  # <-- НОВОЕ: вернуть список без LLM-оценки/выбора
 
 
 class PickBestResponse(BaseModel):
@@ -256,6 +295,47 @@ class PickBestResponse(BaseModel):
     raw_model_output: str | None
     candidates_count: int
     candidates: List[CandidateItem]  # <-- полный список кандидатов
+
+
+class CandidatesOnlyRequest(BaseModel):
+    start: str
+    end: str
+    tz: str = "Asia/Novosibirsk"
+    candidate_limit: int = 200
+
+
+class CandidatesOnlyResponse(BaseModel):
+    candidates_count: int
+    candidates: List[CandidateItem]
+
+
+@app.post("/candidates_only", response_model=CandidatesOnlyResponse)
+async def candidates_only(req: CandidatesOnlyRequest):
+    try:
+        start_utc, end_utc = parse_time_range(req.start, req.end, req.tz)
+        window: List[UserQuestion] = load_questions_window(start_utc, end_utc)
+        if not window:
+            return CandidatesOnlyResponse(candidates_count=0, candidates=[])
+        candidates = window[: max(1, req.candidate_limit)]
+        resp: List[CandidateItem] = []
+        for idx, q in enumerate(candidates, start=1):
+            cinfo = _scores_cache.get(q.msg_id)
+            ms = cinfo.get("score") if cinfo else q.model_score
+            mr = cinfo.get("reason") if cinfo else q.model_reason
+            resp.append(
+                CandidateItem(
+                    rank=idx, msg_id=q.msg_id, chat_id=q.chat_id,
+                    content=q.content, answer=q.answer,
+                    created_at_iso=q.created_at_utc.isoformat(),
+                    is_question=q.is_question, prescore=None,
+                    model_score=(None if ms is None else round(float(ms), 2)),
+                    model_reason=mr
+                )
+            )
+        return CandidatesOnlyResponse(candidates_count=len(resp), candidates=resp)
+    except Exception:
+        logger.exception("candidates_only failed")
+        return CandidatesOnlyResponse(candidates_count=0, candidates=[])
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -347,17 +427,11 @@ async def reset_history(request: ResetRequest):
 
 @app.post("/pick_best_question", response_model=PickBestResponse)
 async def pick_best_question(req: PickBestRequest):
-    """
-    1) читаем кандидатов из FILE по окну [start, end)
-    2) (опц.) прескорим/сузим до candidate_limit (у тебя выключено по умолчанию)
-    3) просим LLM оценить КАЖДЫЙ вопрос (0..100) по заданным критериям
-    4) доп. финальный выбор победителя одной записью LLM (или argmax)
-    """
-    global rag_instance
+    global rag_instance, _scores_cache
     try:
         start_utc, end_utc = parse_time_range(req.start, req.end, req.tz)
 
-        # --- 1) из файла (персистентный источник)
+        # 1) читаем кандидатов из файла
         window: List[UserQuestion] = load_questions_window(start_utc, end_utc)
         if not window:
             return PickBestResponse(
@@ -366,52 +440,90 @@ async def pick_best_question(req: PickBestRequest):
                 candidates_count=0, candidates=[],
             )
 
-        # --- 2) сузить (если надо)
+        # 2) сужаем (если надо)
         candidates = window[: max(1, req.candidate_limit)]
 
-        # --- 3) оценка КАЖДОГО вопроса (одним батч-промптом)
-        scoring_user_prompt = build_per_question_scoring_prompt(candidates, req.scoring_criteria)
-        scoring_system_prompt = "Ты строгий судья. Верни только JSON, без комментариев."
+        # 2a) режим "только кандидаты" — никаких оценок и финального выбора
+        if req.return_candidates_only:
+            candidates_response = []
+            for idx, q in enumerate(candidates, start=1):
+                # подтянем кеш-оценку «как есть», если вдруг уже есть
+                cinfo = _scores_cache.get(q.msg_id)
+                ms = cinfo.get("score") if cinfo else q.model_score
+                mr = cinfo.get("reason") if cinfo else q.model_reason
+                candidates_response.append(
+                    CandidateItem(
+                        rank=idx, msg_id=q.msg_id, chat_id=q.chat_id,
+                        content=q.content, answer=q.answer,
+                        created_at_iso=q.created_at_utc.isoformat(),
+                        is_question=q.is_question, prescore=None,
+                        model_score=(None if ms is None else round(float(ms), 2)),
+                        model_reason=mr
+                    )
+                )
+            return PickBestResponse(
+                winner_msg_id=None, winner_content=None,
+                model_reason=None, raw_model_output=None,
+                candidates_count=len(candidates_response),
+                candidates=candidates_response
+            )
 
-        scoring_output = await rag_instance.aquery(
-            scoring_user_prompt,
-            param=QueryParam(
-                mode=QUERY_MODE,
-                top_k=0,
-                max_token_for_text_unit=QUERY_MAX_TOKENS,
-                max_token_for_global_context=QUERY_MAX_TOKENS,
-                max_token_for_local_context=QUERY_MAX_TOKENS,
-                history_turns=0,
-            ),
-            system_prompt=scoring_system_prompt
-        )
+        # 3) оценка КАЖДОГО вопроса — только тех, кого нет в кеше по текущему criteria
+        crit_hash = _criteria_hash(req.scoring_criteria)
+        need_scoring: List[UserQuestion] = []
+        for q in candidates:
+            entry = _scores_cache.get(q.msg_id)
+            if not entry or entry.get("criteria_hash") != crit_hash:
+                need_scoring.append(q)
 
-        parsed_scores = extract_json(scoring_output)
-        # ожидаем список объектов [{msg_id, score, reason}]
-        if isinstance(parsed_scores, list):
-            reason_map: Dict[str, Tuple[Optional[float], Optional[str]]] = {}
-            for obj in parsed_scores:
-                mid = obj.get("msg_id")
-                sc = obj.get("score")
-                rs = obj.get("reason")
-                try:
-                    if sc is not None:
-                        sc = float(sc)
-                        sc = max(0.0, min(100.0, sc))
-                except Exception:
-                    sc = None
-                if mid:
-                    reason_map[mid] = (sc, rs)
-            # присвоим
-            for q in candidates:
-                if q.msg_id in reason_map:
-                    sc, rs = reason_map[q.msg_id]
-                    q.model_score = sc
-                    q.model_reason = rs
-        else:
-            logger.warning("LLM scoring JSON not parsed; leaving scores as None.")
+        raw_scoring_output = None
+        if need_scoring:
+            scoring_user_prompt = build_per_question_scoring_prompt(need_scoring, req.scoring_criteria)
+            scoring_system_prompt = "Ты строгий судья. Верни только JSON, без комментариев."
 
-        # --- 4) финальный выбор победителя
+            raw_scoring_output = await rag_instance.aquery(
+                scoring_user_prompt,
+                param=QueryParam(
+                    mode="naive", top_k=0,
+                    max_token_for_text_unit=QUERY_MAX_TOKENS,
+                    max_token_for_global_context=QUERY_MAX_TOKENS,
+                    max_token_for_local_context=QUERY_MAX_TOKENS,
+                    history_turns=0,
+                ),
+                system_prompt=scoring_system_prompt
+            )
+
+            parsed_scores = extract_json(raw_scoring_output)
+            if isinstance(parsed_scores, list):
+                updated = 0
+                for obj in parsed_scores:
+                    mid = obj.get("msg_id")
+                    sc = obj.get("score")
+                    rs = obj.get("reason")
+                    try:
+                        if sc is not None:
+                            sc = float(sc)
+                            sc = max(0.0, min(100.0, sc))
+                    except Exception:
+                        sc = None
+                    if mid is None:
+                        continue
+                    _scores_cache[mid] = {"score": sc, "reason": rs, "criteria_hash": crit_hash}
+                    updated += 1
+                if updated:
+                    save_scores_cache()
+                    logger.info(f"Scores cache updated: +{updated} entries")
+            else:
+                logger.warning("LLM scoring JSON not parsed; scores not updated.")
+
+        # 4) смёрджим оценки из кеша в объекты кандидатов (в память)
+        for q in candidates:
+            cinfo = _scores_cache.get(q.msg_id)
+            if cinfo:
+                q.model_score = cinfo.get("score")
+                q.model_reason = cinfo.get("reason")
+
+        # 5) финальный выбор победителя (LLM или argmax)
         winner_msg_id = None
         final_reason = None
         final_output_text = None
@@ -423,8 +535,7 @@ async def pick_best_question(req: PickBestRequest):
             final_output_text = await rag_instance.aquery(
                 final_user_prompt,
                 param=QueryParam(
-                    mode=QUERY_MODE,
-                    top_k=0,
+                    mode="naive", top_k=0,
                     max_token_for_text_unit=QUERY_MAX_TOKENS,
                     max_token_for_global_context=QUERY_MAX_TOKENS,
                     max_token_for_local_context=QUERY_MAX_TOKENS,
@@ -438,14 +549,12 @@ async def pick_best_question(req: PickBestRequest):
                 winner_msg_id = obj.get("winner_msg_id")
                 final_reason = obj.get("reason")
         else:
-            # argmax по score, tie-breaker: более высокий tokens_est, потом более ранний
             scored = [q for q in candidates if q.model_score is not None]
             if scored:
                 scored.sort(key=lambda x: (x.model_score, x.tokens_est, -x.created_at_utc.timestamp()), reverse=True)
                 winner_msg_id = scored[0].msg_id
                 final_reason = "Auto-selected as highest scored question."
             else:
-                # если нет оценок, fallback — последний по времени
                 winner_msg_id = candidates[-1].msg_id
                 final_reason = "Fallback to latest question."
 
@@ -456,7 +565,7 @@ async def pick_best_question(req: PickBestRequest):
                     winner_content = q.content
                     break
 
-        # подготовим выдачу кандидатов
+        # 6) готовим ответ
         candidates_response: List[CandidateItem] = []
         for idx, q in enumerate(candidates, start=1):
             candidates_response.append(
@@ -474,20 +583,12 @@ async def pick_best_question(req: PickBestRequest):
                 )
             )
 
-        # можно сохранить обратно score/reason в файл (append как обновление записи)
-        # Вариант простой: записать «апдейт» отдельной строкой (event sourcing).
-        try:
-            for q in candidates:
-                if (q.model_score is not None) or (q.model_reason):
-                    save_question_to_file(q)
-        except Exception:
-            logger.exception("Failed to append scored records to file")
-
+        # ВАЖНО: не пишем обратно «оценённые» q в NDJSON — чтобы не размножать дубликаты
         return PickBestResponse(
             winner_msg_id=winner_msg_id,
             winner_content=winner_content,
             model_reason=final_reason,
-            raw_model_output=final_output_text or scoring_output,
+            raw_model_output=final_output_text or raw_scoring_output,
             candidates_count=len(candidates),
             candidates=candidates_response
         )
