@@ -203,6 +203,16 @@ async def chat(request: ChatRequest):
     try:
         chat_id = request.chat_id
         query = request.message.strip()
+        created_at = _now_utc()
+        user_question = UserQuestion(
+            msg_id=f"{chat_id}:{created_at.timestamp()}",
+            chat_id=chat_id,
+            content=query,
+            created_at_utc=created_at,
+            tokens_est=len(query),
+            is_question=True
+        )
+        all_user_questions.append(user_question)
         logger.info(f"New request from user {request.chat_id}: {query}")
         history = dialogue_histories[chat_id][-4:]
 
