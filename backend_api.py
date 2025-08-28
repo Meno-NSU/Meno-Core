@@ -516,7 +516,7 @@ async def pick_best_question(req: PickBestRequest):
         raw_scoring_output = None
         if need_scoring:
             scoring_user_prompt = build_per_question_scoring_prompt(need_scoring, req.scoring_criteria)
-            scoring_system_prompt = "Ты строгий судья. Верни только JSON, без комментариев."
+            scoring_system_prompt = "Ты строгий судья. Всегда возвращай массив [] из объектов с полями msg_id, score, reason. Ничего вне JSON. Если элемент списка нельзя корректно представить в JSON — пропусти его. Не пытайся восстанавливать частично."
             logger.debug(
                 f"[{req_id}] scoring: prompt_user_len={_len(scoring_user_prompt)}, "
                 f"prompt_sys_len={_len(scoring_system_prompt)}"
@@ -745,120 +745,55 @@ def _strip_code_fences(s: str) -> str:
 
 def extract_json_loose(s: str):
     """
-    Пытается извлечь JSON-объект/массив из произвольной строки.
-    Если это не удаётся (например, пришёл обрезанный массив), то
-    собирает все валидные топ-уровневые объекты {...} и возвращает
-    список таких объектов (отфильтрованных по наличию msg_id/score).
-    Возвращает либо dict/список (если целиком распарсилось),
-    либо список dict’ов (частичный результат),
-    либо None (ничего полезного не нашли).
+    Толерантный разбор вывода модели.
+    1) Пытаемся загрузить целиком (объект или массив).
+    2) Если не вышло — итерируемся по строке, и с каждой позиции,
+       где встречается '{' или '[', пытаемся raw_decode().
+       - Если встретили список -> возвращаем его.
+       - Если встретили объект -> накапливаем.
+    3) Если накопили хотя бы один объект, возвращаем список объектов.
+    4) Иначе None.
     """
     if not s:
         return None
 
     s = _strip_code_fences(s)
 
-    # 1) Сначала пробуем «как есть»
+    # 1) нормальный JSON целиком
     try:
         return json.loads(s)
     except Exception:
         pass
 
-    # 2) Попробуем найти первый валидный JSON-блок ({} или [])
-    def _find_first_balanced_block(text: str):
-        stack = []
-        in_str = False
-        esc = False
-        start = None
-        opener = None  # '{' или '['
+    # 2) по одному блоку
+    dec = JSONDecoder()
+    n = len(s)
+    i = 0
+    objs = []
 
-        for i, ch in enumerate(text):
-            if in_str:
-                if esc:
-                    esc = False
-                    continue
-                if ch == '\\':
-                    esc = True
-                elif ch == '"':
-                    in_str = False
-                continue
-
-            if ch == '"':
-                in_str = True
-                continue
-
-            if ch in '{[':
-                if not stack:  # старт верхнего уровня
-                    start = i
-                    opener = ch
-                stack.append(ch)
-            elif ch in '}]':
-                if not stack:
-                    continue
-                top = stack[-1]
-                if (top == '{' and ch == '}') or (top == '[' and ch == ']'):
-                    stack.pop()
-                    if not stack and start is not None:
-                        return text[start:i+1]
-        return None
-
-    block = _find_first_balanced_block(s)
-    if block:
+    while i < n:
+        # ищем следующий потенциальный старт JSON
+        j1 = s.find('{', i)
+        j2 = s.find('[', i)
+        if j1 == -1 and j2 == -1:
+            break
+        # ближайшая точка старта
+        j = j1 if (j2 == -1 or (j1 != -1 and j1 < j2)) else j2
         try:
-            return json.loads(block)
+            obj, end = dec.raw_decode(s, j)
+            # если это список — это, скорее всего, весь нужный результат
+            if isinstance(obj, list):
+                return obj
+            # если объект — сохраняем (но фильтруем «полезные»)
+            if isinstance(obj, dict):
+                # берём только релевантные объекты (оценки/выбор победителя)
+                if ("msg_id" in obj and ("score" in obj or "reason" in obj)) or ("winner_msg_id" in obj):
+                    objs.append(obj)
+            i = max(end, j + 1)
         except Exception:
-            pass
+            i = j + 1  # сдвигаемся на символ вперёд и пробуем дальше
 
-    # 3) Фрагментированная выдача: собираем ВСЕ валидные top-level объекты {...}
-    #    Игнорируем вложенные, учитываем кавычки/экранирование.
-    objs_raw = []
-    stack = []
-    in_str = False
-    esc = False
-    start = None
-    for i, ch in enumerate(s):
-        if in_str:
-            if esc:
-                esc = False
-                continue
-            if ch == '\\':
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        else:
-            if ch == '"':
-                in_str = True
-                continue
-            if ch == '{':
-                if not stack:
-                    start = i
-                stack.append('{')
-            elif ch == '}':
-                if stack:
-                    stack.pop()
-                    if not stack and start is not None:
-                        objs_raw.append(s[start:i+1])
-                        start = None
-
-    parsed = []
-    bad = 0
-    for raw in objs_raw:
-        try:
-            obj = json.loads(raw)
-            # опциональный фильтр «это действительно элемент с оценкой»
-            if isinstance(obj, dict) and ("msg_id" in obj or "score" in obj):
-                parsed.append(obj)
-        except Exception:
-            bad += 1
-
-    if parsed:
-        if bad:
-            logger.warning(f"extract_json_loose: parsed {len(parsed)} objects, skipped {bad} broken chunks.")
-        return parsed
-
-    logger.warning("extract_json_loose: failed to recover any JSON objects.")
-    return None
+    return objs if objs else None
 
 
 def upsert_scores_into_questions_file(updates: Dict[str, Dict[str, Optional[float]]]) -> int:
