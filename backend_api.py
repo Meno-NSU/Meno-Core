@@ -484,7 +484,7 @@ async def pick_best_question(req: PickBestRequest):
             raw_scoring_output = await rag_instance.aquery(
                 scoring_user_prompt,
                 param=QueryParam(
-                    mode="naive", top_k=0,
+                    mode=QUERY_MODE, top_k=0,
                     max_token_for_text_unit=QUERY_MAX_TOKENS,
                     max_token_for_global_context=QUERY_MAX_TOKENS,
                     max_token_for_local_context=QUERY_MAX_TOKENS,
@@ -582,7 +582,22 @@ async def pick_best_question(req: PickBestRequest):
                     model_reason=q.model_reason
                 )
             )
-
+        try:
+            if need_scoring:
+                updates = {}
+                for q in need_scoring:
+                    cinfo = _scores_cache.get(q.msg_id)
+                    if not cinfo:
+                        continue
+                    updates[q.msg_id] = {
+                        "model_score": cinfo.get("score"),
+                        "model_reason": cinfo.get("reason"),
+                    }
+                if updates:
+                    n = upsert_scores_into_questions_file(updates)
+                    logger.info(f"questions.ndjson updated with scores: {n} records")
+        except Exception:
+            logger.exception("Failed to upsert scores into questions file")
         # ВАЖНО: не пишем обратно «оценённые» q в NDJSON — чтобы не размножать дубликаты
         return PickBestResponse(
             winner_msg_id=winner_msg_id,
@@ -665,3 +680,39 @@ def extract_json(s: str):
     except Exception:
         logger.exception("Failed to parse JSON from model output")
         return None
+
+def upsert_scores_into_questions_file(updates: Dict[str, Dict[str, Optional[float]]]) -> int:
+    """
+    Переписывает QUESTIONS_FILE атомарно, проставляя/обновляя model_score/model_reason
+    для записей с msg_id, присутствующих в updates.
+    updates: msg_id -> {"model_score": float|None, "model_reason": str|None}
+    Возвращает количество обновлённых записей.
+    """
+    if not updates:
+        return 0
+    _ensure_questions_file()
+    updated = 0
+    tmp_path = str(QUESTIONS_FILE) + ".tmp"
+
+    with QUESTIONS_FILE.open("r", encoding="utf-8") as src, open(tmp_path, "w", encoding="utf-8") as dst:
+        for line in src:
+            if not line.strip():
+                dst.write(line)
+                continue
+            try:
+                obj = json.loads(line)
+                mid = obj.get("msg_id")
+                if mid and mid in updates:
+                    patch = updates[mid]
+                    if patch.get("model_score") is not None:
+                        obj["model_score"] = patch["model_score"]
+                    if patch.get("model_reason") is not None:
+                        obj["model_reason"] = patch["model_reason"]
+                    updated += 1
+                dst.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            except Exception:
+                # пробрасываем как есть, чтобы не потерять строку
+                dst.write(line)
+
+    os.replace(tmp_path, QUESTIONS_FILE)
+    return updated
