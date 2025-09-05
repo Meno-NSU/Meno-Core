@@ -2,6 +2,7 @@ import codecs
 import hashlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import uuid
@@ -32,6 +33,12 @@ from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS,
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
+LINKS_LOG_PATH = getattr(settings, "links_log_path", "logs/links_debug.log")
+LINKS_LOG_LEVEL = getattr(settings, "links_log_level", "DEBUG")  # DEBUG/INFO/WARNING
+LINKS_LOG_MAX_BYTES = getattr(settings, "links_log_max_bytes", 10 * 1024 * 1024)
+LINKS_LOG_BACKUP_COUNT = getattr(settings, "links_log_backup_count", 5)
+
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -44,6 +51,23 @@ dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 SCORES_CACHE_FILE = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
 
 _scores_cache: Dict[str, Dict[str, Optional[str]]] = {}
+
+def setup_links_logger(path: str, level: str = "DEBUG",
+                       max_bytes: int = 10*1024*1024, backup_count: int = 5) -> logging.Logger:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    logger = logging.getLogger("links")
+    logger.setLevel(getattr(logging, level.upper(), logging.DEBUG))
+    # чтобы не дублировать записи при hot-reload
+    if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == os.path.abspath(path)
+               for h in logger.handlers):
+        fh = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        fmt = logging.Formatter(
+            fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    return logger
 
 
 def _criteria_hash(criteria: str) -> str:
@@ -163,13 +187,29 @@ async def clear_rag_cache():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler
+    links_logger = setup_links_logger(
+        LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
+    )
     setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
-    rag_instance = await initialize_rag()
+    rag_instance, embedder, bm25, chunk_db = await initialize_rag()
     load_scores_cache()
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     if settings.enable_links_addition:
-        ref_searcher = LinkSearcher(settings.urls_path, rag_instance, settings.top_k,
-                                    dist_threshold=settings.dist_threshold, max_links=settings.max_links)
+        ref_searcher = LinkSearcher(
+            settings.urls_path,
+            rag_instance,
+            top_k=settings.top_k,
+            dist_threshold=settings.dist_threshold,  # для совместимости
+            max_links=settings.max_links,
+            embedder=embedder,
+            bm25=bm25,
+            chunk_db=chunk_db,
+            dense_weight=getattr(settings, "dense_weight", 1.0),
+            sparse_weight=getattr(settings, "sparse_weight", 0.1),
+            hybrid_similarity_threshold=getattr(settings, "hybrid_similarity_threshold", 1.65),
+            per_chunk_top_k=getattr(settings, "per_chunk_top_k", None),
+            logger=links_logger,  
+        )
     if settings.enable_links_correction:
         ref_corrector = LinkCorrecter(settings.urls_path, settings.correct_dist_threshold)
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
@@ -394,7 +434,7 @@ async def chat(request: ChatRequest):
         if settings.enable_links_correction:
             answer = await ref_corrector.replace_markdown_links(answer)
         if settings.enable_links_addition:
-            answer = await ref_searcher.get_formated_answer(resolved_query, answer)
+            answer = await ref_searcher.get_formated_answer(answer)
         # answer = response_text
         dialogue_histories[chat_id].append({"role": "user", "content": query})
         dialogue_histories[chat_id].append(
