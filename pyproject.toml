@@ -10,7 +10,7 @@ dependencies = [
     "fastapi>=0.115.12",
     "future>=1.0.0",
     "graspologic>=3.4.1",
-    "lightrag-hku==1.2.6",
+    "lightrag-hku>=1.4.7",
     "nano-vectordb>=0.0.4.3",
     "nltk>=3.9.1",
     "openai>=1.82.0",
