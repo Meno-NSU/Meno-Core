@@ -205,9 +205,9 @@ async def lifespan(app: FastAPI):
             bm25=bm25,
             chunk_db=chunk_db,
             dense_weight=getattr(settings, "dense_weight", 1.0),
-            sparse_weight=getattr(settings, "sparse_weight", 0.1),
-            hybrid_similarity_threshold=getattr(settings, "hybrid_similarity_threshold", 1.65),
-            per_chunk_top_k=getattr(settings, "per_chunk_top_k", None),
+            sparse_weight=getattr(settings, "sparse_weight", 0.22),
+            hybrid_similarity_threshold=getattr(settings, "hybrid_similarity_threshold", 2.6),
+            per_chunk_top_k=getattr(settings, "per_chunk_top_k", 10),
             logger=links_logger,  
         )
     if settings.enable_links_correction:

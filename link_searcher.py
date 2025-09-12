@@ -12,14 +12,14 @@ class LinkSearcher:
         urls_path: Path | str,
         lightrag_instance: LightRAG,
         top_k: int,
-        dist_threshold: float,  # больше не используется, но оставим для совместимости
+        dist_threshold: float,  # больше не используется
         max_links: int = 5,
         embedder=None,
         bm25=None,
         chunk_db: List[Tuple[str, str]] | None = None,
         dense_weight: float = 1.0,
-        sparse_weight: float = 0.1,
-        hybrid_similarity_threshold: float = 3.5,
+        sparse_weight: float = 0.2,
+        hybrid_similarity_threshold: float = 1.88,
         per_chunk_top_k: int | None = None,
         logger=None
 
@@ -163,5 +163,5 @@ class LinkSearcher:
     async def get_formated_answer(self, answer: str) -> str:
         links = await self.get_links_from_answer(answer)
         if links:
-            return f"{answer}\n\nСсылки, которые могут быть полезны:\n- " + "\n- ".join(links)
+            return f"{answer}\n\nИнтересные ссылки:\n- " + "\n- ".join(links)
         return answer
