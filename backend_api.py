@@ -1,6 +1,9 @@
+import asyncio
 import codecs
+import io
 import json
 import logging
+import mimetypes
 import os
 import time
 import uuid
@@ -8,6 +11,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import List, Dict, Optional, Union
 from typing import Literal
 
@@ -155,6 +159,18 @@ class ResetResponse(BaseModel):
 class OAIMsg(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+class LinkOnlyResponse(BaseModel):
+    url: str
+
+
+class LinkOnlyRequest(BaseModel):
+    messages: List[OAIMsg]
+
+
+class ImageOnlyRequest(BaseModel):
+    messages: List[OAIMsg]
 
 
 class OAIChatCompletionsRequest(BaseModel):
@@ -430,6 +446,39 @@ async def reset_history(request: ResetRequest):
             f"Попытка очистки истории: история для пользователя {chat_id} не найдена")
 
     return ResetResponse(chat_id=chat_id, status="ok")
+
+
+@app.post("/v1/link_from_text", response_model=LinkOnlyResponse)
+async def link_from_text(req: LinkOnlyRequest):
+    return LinkOnlyResponse(url="https://nsu.ru/")
+
+
+@app.post("/v1/image_from_text")
+async def image_from_text(req: ImageOnlyRequest):
+    """
+    Временная заглушка: игнорируем текст запроса и возвращаем байты локального изображения.
+    """
+    path = Path("resources/image.jpg")
+    if not path.exists() or not path.is_file():
+        logger.error(f"Stub image not found: {path.resolve()}")
+        return JSONResponse(status_code=500, content={"error": "stub_image_not_found", "path": str(path)})
+
+    try:
+        data: bytes = await asyncio.to_thread(path.read_bytes)
+    except Exception as e:
+        logger.exception("Failed to read stub image")
+        return JSONResponse(status_code=500, content={"error": "read_failed", "message": str(e)})
+
+    ctype, _ = mimetypes.guess_type(str(path))
+    if not ctype:
+        ctype = "application/octet-stream"
+
+    filename = path.name or f"image-{uuid.uuid4().hex}"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=ctype,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 @app.get("/v1/models")
