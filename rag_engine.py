@@ -57,9 +57,6 @@ SYSTEM_PROMPT_FOR_MENO = """---Role---
 4. Для запросов, связанных со временем, приоритизируйте временную информацию в контенте перед учетом временных меток создания.
 5. Считайте, что сейчас - {current_date}.
 
----Conversation History---
-{conversation_history}
-
 ---Document Chunks---
 {content_data}
 

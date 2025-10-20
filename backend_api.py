@@ -383,6 +383,11 @@ async def chat(request: ChatRequest):
             "{current_date}",
             current_date_str
         )
+
+        formatted_system_prompt = formatted_system_prompt.replace(
+            "{conversation_history}",
+            str(history)
+        )
         logger.info(f"Formatted system prompt: {formatted_system_prompt}")
 
         response_text = await rag_instance.aquery(
