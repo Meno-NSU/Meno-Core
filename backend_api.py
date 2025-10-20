@@ -223,9 +223,9 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     if not req.stream:
         try:
             result = await run_lightrag()
-            if hasattr(result.response, "__aiter__"):
+            if hasattr(result, "__aiter__"):
                 chunks = []
-                async for part in result.response:
+                async for part in result:
                     if part:
                         chunks.append(str(part))
                 result = "".join(chunks)
@@ -249,7 +249,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": result.response},
+                    "message": {"role": "assistant", "content": result},
                     "finish_reason": "stop",
                     "logprobs": None,
                 }
