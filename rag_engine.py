@@ -6,8 +6,16 @@ import numpy as np
 import openai
 import torch
 import torch.nn.functional as F
-from nltk import SnowballStemmer, wordpunct_tokenize
+# from nltk import SnowballStemmer, wordpunct_tokenize
+from rank_bm25 import BM25Okapi
+from nltk import wordpunct_tokenize
+from nltk.stem.snowball import SnowballStemmer
+from transformers import AutoModelForTokenClassification
 from transformers import AutoTokenizer, AutoModel
+from collections import defaultdict
+import json
+from pathlib import Path
+
 from datetime import datetime
 import pytz
 
@@ -16,6 +24,8 @@ from lightrag import LightRAG
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc, setup_logger
+
+
 
 TEMPERATURE = 0.3
 QUERY_MAX_TOKENS = 4000
@@ -344,8 +354,21 @@ async def initialize_rag() -> LightRAG:
         logger.info("Initializing RAG storages...")
         await rag.initialize_storages()
         logger.info("RAG system initialized successfully")
-
-        return rag
+        token_cls = AutoModelForTokenClassification.from_pretrained(
+            LOCAL_EMBEDDER_NAME, trust_remote_code=True, device_map='cpu', local_files_only=True
+        )
+        token_cls.eval()
+        embedder = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
+        
+        chunk_db, bm25 = await build_chunks_db_and_bm25(WORKING_DIR)
+        logger2 = logging.getLogger("links")
+        logger2.debug("RAG init: chunks=%d", len(chunk_db))
+        try:
+            logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
+        except Exception:
+            pass
+        
+        return rag, embedder, bm25, chunk_db
     except Exception as e:
         logger.error(f"Error initializing RAG: {str(e)}", exc_info=True)
         raise
@@ -381,3 +404,94 @@ async def get_current_period():
             day_str = f"{day}ое"
     
     return f"{day_str} {month_names[month]} {year} года"
+
+# ------------ Hybrid embedder and normalization ------------
+class GTEEmbedding(torch.nn.Module):
+    def __init__(self, tokenizer, token_cls_model, normalized: bool = True):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.model = token_cls_model
+        self.normalized = normalized
+        self.vocab_size = self.model.config.vocab_size
+
+    def _process_token_weights(self, token_weights: np.ndarray, input_ids: list):
+        result = defaultdict(int)
+        unused = {self.tokenizer.cls_token_id, self.tokenizer.eos_token_id,
+                  self.tokenizer.pad_token_id, self.tokenizer.unk_token_id}
+        for w, idx in zip(token_weights, input_ids):
+            if idx not in unused and w > 0:
+                token = self.tokenizer.decode([int(idx)])
+                if w > result[token]:
+                    result[token] = float(w)
+        return result
+
+    @torch.no_grad()
+    def encode(self, texts, dimension=None, max_length=4096, batch_size=16,
+               return_dense=True, return_sparse=True):
+        if isinstance(texts, str):
+            texts = [texts]
+        if dimension is None:
+            dimension = self.model.config.hidden_size
+
+        toks = self.tokenizer(texts, return_tensors='pt', padding=True,
+                              truncation=True, max_length=max_length).to(self.model.device)
+        out = self.model(**toks, return_dict=True)
+        res = {}
+        if return_dense:
+            dense = out.last_hidden_state[:, 0, :dimension]
+            if self.normalized:
+                dense = torch.nn.functional.normalize(dense, dim=-1)
+            res["dense_embeddings"] = dense
+        if return_sparse:
+            tw = torch.relu(out.logits).squeeze(-1)
+            res["token_weights"] = list(map(
+                self._process_token_weights,
+                tw.detach().cpu().numpy().tolist(),
+                toks['input_ids'].cpu().numpy().tolist()
+            ))
+        return res
+
+    def compute_dense_scores(self, e1, e2):
+        return torch.sum(e1*e2, dim=-1).cpu().detach().numpy()
+
+    def _sparse_dot(self, a, b):
+        s = 0.0
+        for t, w in a.items():
+            if t in b:
+                s += w * b[t]
+        return s
+
+    def compute_sparse_scores(self, s1, s2):
+        return np.array([self._sparse_dot(a, b) for a, b in zip(s1, s2)])
+
+    @torch.no_grad()
+    def compute_scores(self, pairs, dimension=None, max_length=4096,
+                       dense_weight=1.0, sparse_weight=0.1):
+        t1 = [p[0] for p in pairs]; t2 = [p[1] for p in pairs]
+        e1 = self.encode(t1, dimension, max_length)
+        e2 = self.encode(t2, dimension, max_length)
+        ds = self.compute_dense_scores(e1["dense_embeddings"], e2["dense_embeddings"])
+        ss = self.compute_sparse_scores(e1["token_weights"], e2["token_weights"])
+        return (ds * dense_weight + ss * sparse_weight).tolist()
+
+
+_snow = SnowballStemmer(language='russian')
+async def _tokenize_and_normalize(text: str) -> str:
+    words = []
+    for w in wordpunct_tokenize(text):
+        if w.isalnum():
+            stem = _snow.stem(w.lower()).strip()
+            if stem:
+                words.append(stem)
+    return ' '.join(words)
+
+async def build_chunks_db_and_bm25(working_dir: str):
+    chunks_path = Path(working_dir) / "kv_store_text_chunks.json"
+    with chunks_path.open("r", encoding="utf-8") as fp:
+        raw = json.load(fp)
+    # [(content, full_doc_id)]
+    chunk_db = [(raw[k]["content"], raw[k]["full_doc_id"]) for k in raw]
+    norm_texts = [await _tokenize_and_normalize(c[0]) for c in chunk_db]
+    bm25 = BM25Okapi(norm_texts)
+    return chunk_db, bm25
+
