@@ -212,9 +212,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
             param=QueryParam(
                 mode=QUERY_MODE,
                 top_k=TOP_K,
-                max_token_for_text_unit=QUERY_MAX_TOKENS,
-                max_token_for_global_context=QUERY_MAX_TOKENS,
-                max_token_for_local_context=QUERY_MAX_TOKENS,
+                max_total_tokens=QUERY_MAX_TOKENS,
                 history_turns=len(history),
                 stream=req.stream,
             ),
@@ -391,9 +389,8 @@ async def chat(request: ChatRequest):
             param=QueryParam(
                 mode=QUERY_MODE,
                 top_k=TOP_K,
-                max_token_for_text_unit=QUERY_MAX_TOKENS,
-                max_token_for_global_context=QUERY_MAX_TOKENS,
-                max_token_for_local_context=QUERY_MAX_TOKENS,
+                max_total_tokens=QUERY_MAX_TOKENS,
+                max_=QUERY_MAX_TOKENS,
                 history_turns=len(history),
             ),
             system_prompt=formatted_system_prompt
