@@ -116,49 +116,63 @@ FEWSHOTS_FOR_ANAPHORA = [
 
 logger = logging.getLogger(__name__)
 
-_JSON_RE = re.compile(r"\{[\s\S]*\}")
+_JSON_BLOCK_RE = re.compile(r"```json\s*([\s\S]*?)\s*```", re.IGNORECASE)
+_JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 
 
-def _coerce_llm_response_to_json(text: str) -> str:
+def _as_json_block(obj: dict) -> str:
+    return "```json\n" + json.dumps(obj, ensure_ascii=False) + "\n```"
+
+
+def _coerce_llm_response_to_json_block(text: str) -> str:
     """
-    Возвращает строку с JSON-объектом:
-    {
-      "response": "<итоговый ответ>",
-      "high_level_keywords": [...],
-      "low_level_keywords": [...]
-    }
-    Если в тексте уже есть JSON — берём его (и нормализуем ключи).
-    Иначе — оборачиваем плейнтекст в такую структуру.
+    Возвращает STRING в формате код-блока ```json ... ``` с ключами:
+      response, high_level_keywords, low_level_keywords.
     """
     if not isinstance(text, str):
         text = "" if text is None else str(text)
 
-    m = _JSON_RE.search(text)
+    m = _JSON_BLOCK_RE.search(text)
     if m:
-        candidate = m.group(0)
+        payload = m.group(1)
         try:
-            obj = json.loads(candidate)
+            obj = json.loads(payload)
             if "response" not in obj:
                 for k in ("answer", "output", "content"):
-                    if k in obj and isinstance(obj[k], str):
-                        obj["response"] = obj[k]
+                    if isinstance(obj.get(k), str):
+                        obj["response"] = obj[k];
                         break
             obj.setdefault("high_level_keywords", obj.get("hl_keywords", []))
             obj.setdefault("low_level_keywords", obj.get("ll_keywords", []))
-            if "response" not in obj or not isinstance(obj["response"], str):
-                raise ValueError("no 'response' in parsed JSON")
-            obj.pop("hl_keywords", None)
+            obj.pop("hl_keywords", None);
             obj.pop("ll_keywords", None)
-            return json.dumps(obj, ensure_ascii=False)
+            return _as_json_block(obj)
         except Exception:
-            logger.debug("LLM text contains braces but not valid JSON; fallback to wrapping")
+            logger.debug("Found ```json block``` but cannot parse; will wrap cleanly")
 
-    safe = {
+    m2 = _JSON_OBJECT_RE.search(text)
+    if m2:
+        try:
+            obj = json.loads(m2.group(0))
+            if "response" not in obj:
+                for k in ("answer", "output", "content"):
+                    if isinstance(obj.get(k), str):
+                        obj["response"] = obj[k];
+                        break
+            obj.setdefault("high_level_keywords", obj.get("hl_keywords", []))
+            obj.setdefault("low_level_keywords", obj.get("ll_keywords", []))
+            obj.pop("hl_keywords", None);
+            obj.pop("ll_keywords", None)
+            return _as_json_block(obj)
+        except Exception:
+            logger.debug("Braces present but not valid JSON; wrapping plaintext")
+
+    obj = {
         "response": text.strip(),
         "high_level_keywords": [],
         "low_level_keywords": [],
     }
-    return json.dumps(safe, ensure_ascii=False)
+    return _as_json_block(obj)
 
 
 # ---------- LLM wrapper ----------
@@ -197,11 +211,11 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
         raw = completion.choices[0].message.content or ""
         logger.info(f"Received response from LLM, length: {len(raw)}")
 
-        return _coerce_llm_response_to_json(raw)
+        return _coerce_llm_response_to_json_block(raw)
 
     except Exception as e:
         logger.error(f"Error in llm_model_func: {str(e)}", exc_info=True)
-        return _coerce_llm_response_to_json(
+        return _coerce_llm_response_to_json_block(
             "Извините, сейчас не удалось получить ответ от модели."
         )
 
