@@ -57,7 +57,7 @@ SYSTEM_PROMPT_FOR_MENO = """---Role---
 5. Считайте, что сейчас - {current_date}.
 
 ---Conversation History---
-{history}
+{conversation_history}
 
 ---Document Chunks---
 {content_data}

@@ -214,6 +214,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                 top_k=TOP_K,
                 max_total_tokens=QUERY_MAX_TOKENS,
                 history_turns=len(history),
+                conversation_history=history,
                 stream=req.stream,
             ),
             system_prompt=formatted_system_prompt
@@ -392,6 +393,7 @@ async def chat(request: ChatRequest):
                 max_total_tokens=QUERY_MAX_TOKENS,
                 max_=QUERY_MAX_TOKENS,
                 history_turns=len(history),
+                conversation_history=history,
             ),
             system_prompt=formatted_system_prompt
         )
