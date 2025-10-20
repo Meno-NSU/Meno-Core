@@ -398,10 +398,10 @@ async def chat(request: ChatRequest):
             system_prompt=formatted_system_prompt
         )
         answer = response_text
-        if settings.enable_links_correction:
-            answer = await ref_corrector.replace_markdown_links(answer)
-        if settings.enable_links_addition:
-            answer = await ref_searcher.get_formated_answer(answer)
+        # if settings.enable_links_correction:
+        #     answer = await ref_corrector.replace_markdown_links(answer)
+        # if settings.enable_links_addition:
+        #     answer = await ref_searcher.get_formated_answer(answer)
         dialogue_histories[chat_id].append({"role": "user", "content": query})
         dialogue_histories[chat_id].append(
             {"role": "assistant", "content": answer})

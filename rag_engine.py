@@ -1,31 +1,32 @@
+import os
+from typing import List
+
+import json
 import logging
 import os
+import re
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 from typing import List
 
 import numpy as np
 import openai
+import pytz
 import torch
 import torch.nn.functional as F
-# from nltk import SnowballStemmer, wordpunct_tokenize
-from rank_bm25 import BM25Okapi
-from nltk import wordpunct_tokenize
-from nltk.stem.snowball import SnowballStemmer
-from transformers import AutoModelForTokenClassification
-from transformers import AutoTokenizer, AutoModel
-from collections import defaultdict
-import json
-from pathlib import Path
-
-from datetime import datetime
-import pytz
-
-from config import settings
-from lightrag import LightRAG
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc, setup_logger
+from nltk import wordpunct_tokenize
+from nltk.stem.snowball import SnowballStemmer
+# from nltk import SnowballStemmer, wordpunct_tokenize
+from rank_bm25 import BM25Okapi
+from transformers import AutoModelForTokenClassification
+from transformers import AutoTokenizer, AutoModel
 
-
+from config import settings
+from lightrag import LightRAG
 
 TEMPERATURE = 0.3
 QUERY_MAX_TOKENS = 4000
@@ -115,6 +116,51 @@ FEWSHOTS_FOR_ANAPHORA = [
 
 logger = logging.getLogger(__name__)
 
+_JSON_RE = re.compile(r"\{[\s\S]*\}")
+
+
+def _coerce_llm_response_to_json(text: str) -> str:
+    """
+    Возвращает строку с JSON-объектом:
+    {
+      "response": "<итоговый ответ>",
+      "high_level_keywords": [...],
+      "low_level_keywords": [...]
+    }
+    Если в тексте уже есть JSON — берём его (и нормализуем ключи).
+    Иначе — оборачиваем плейнтекст в такую структуру.
+    """
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+
+    m = _JSON_RE.search(text)
+    if m:
+        candidate = m.group(0)
+        try:
+            obj = json.loads(candidate)
+            if "response" not in obj:
+                for k in ("answer", "output", "content"):
+                    if k in obj and isinstance(obj[k], str):
+                        obj["response"] = obj[k]
+                        break
+            obj.setdefault("high_level_keywords", obj.get("hl_keywords", []))
+            obj.setdefault("low_level_keywords", obj.get("ll_keywords", []))
+            if "response" not in obj or not isinstance(obj["response"], str):
+                raise ValueError("no 'response' in parsed JSON")
+            obj.pop("hl_keywords", None)
+            obj.pop("ll_keywords", None)
+            return json.dumps(obj, ensure_ascii=False)
+        except Exception:
+            logger.debug("LLM text contains braces but not valid JSON; fallback to wrapping")
+
+    safe = {
+        "response": text.strip(),
+        "high_level_keywords": [],
+        "low_level_keywords": [],
+    }
+    return json.dumps(safe, ensure_ascii=False)
+
+
 # ---------- LLM wrapper ----------
 async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs) -> str:
     """
@@ -148,12 +194,16 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
             messages=messages,
             temperature=TEMPERATURE,
         )
-        response = completion.choices[0].message.content
-        logger.info(f"Received response from LLM, length: {len(response)}")
-        return response
+        raw = completion.choices[0].message.content or ""
+        logger.info(f"Received response from LLM, length: {len(raw)}")
+
+        return _coerce_llm_response_to_json(raw)
+
     except Exception as e:
         logger.error(f"Error in llm_model_func: {str(e)}", exc_info=True)
-        raise
+        return _coerce_llm_response_to_json(
+            "Извините, сейчас не удалось получить ответ от модели."
+        )
 
 
 async def explain_abbreviations(question: str, abbreviations: dict) -> str:
@@ -343,7 +393,7 @@ async def initialize_rag() -> LightRAG:
         )
         token_cls.eval()
         embedder = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
-        
+
         chunk_db, bm25 = await build_chunks_db_and_bm25(WORKING_DIR)
         logger2 = logging.getLogger("links")
         logger2.debug("RAG init: chunks=%d", len(chunk_db))
@@ -351,7 +401,7 @@ async def initialize_rag() -> LightRAG:
             logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
         except Exception:
             pass
-        
+
         return rag, embedder, bm25, chunk_db
     except Exception as e:
         logger.error(f"Error initializing RAG: {str(e)}", exc_info=True)
@@ -364,13 +414,13 @@ async def get_current_period():
     day = today.day
     month = today.month
     year = today.year
-    
+
     month_names = {
         1: "января", 2: "февраля", 3: "марта", 4: "апреля",
         5: "мая", 6: "июня", 7: "июля", 8: "августа",
         9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
     }
-    
+
     # Format day with proper suffix for Russian
     if 11 <= day <= 19:
         day_str = f"{day}ое"
@@ -386,8 +436,9 @@ async def get_current_period():
             day_str = f"{day}ое"
         else:
             day_str = f"{day}ое"
-    
+
     return f"{day_str} {month_names[month]} {year} года"
+
 
 # ------------ Hybrid embedder and normalization ------------
 class GTEEmbedding(torch.nn.Module):
@@ -436,7 +487,7 @@ class GTEEmbedding(torch.nn.Module):
         return res
 
     def compute_dense_scores(self, e1, e2):
-        return torch.sum(e1*e2, dim=-1).cpu().detach().numpy()
+        return torch.sum(e1 * e2, dim=-1).cpu().detach().numpy()
 
     def _sparse_dot(self, a, b):
         s = 0.0
@@ -451,7 +502,8 @@ class GTEEmbedding(torch.nn.Module):
     @torch.no_grad()
     def compute_scores(self, pairs, dimension=None, max_length=4096,
                        dense_weight=1.0, sparse_weight=0.1):
-        t1 = [p[0] for p in pairs]; t2 = [p[1] for p in pairs]
+        t1 = [p[0] for p in pairs];
+        t2 = [p[1] for p in pairs]
         e1 = self.encode(t1, dimension, max_length)
         e2 = self.encode(t2, dimension, max_length)
         ds = self.compute_dense_scores(e1["dense_embeddings"], e2["dense_embeddings"])
@@ -460,6 +512,8 @@ class GTEEmbedding(torch.nn.Module):
 
 
 _snow = SnowballStemmer(language='russian')
+
+
 async def _tokenize_and_normalize(text: str) -> str:
     words = []
     for w in wordpunct_tokenize(text):
@@ -468,6 +522,7 @@ async def _tokenize_and_normalize(text: str) -> str:
             if stem:
                 words.append(stem)
     return ' '.join(words)
+
 
 async def build_chunks_db_and_bm25(working_dir: str):
     chunks_path = Path(working_dir) / "kv_store_text_chunks.json"
@@ -478,4 +533,3 @@ async def build_chunks_db_and_bm25(working_dir: str):
     norm_texts = [await _tokenize_and_normalize(c[0]) for c in chunk_db]
     bm25 = BM25Okapi(norm_texts)
     return chunk_db, bm25
-
