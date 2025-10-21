@@ -138,16 +138,6 @@ rag_instance: LightRAG
 abbreviations = {}
 
 
-class ChatRequest(BaseModel):
-    chat_id: str
-    message: str
-
-
-class ChatResponse(BaseModel):
-    chat_id: str
-    response: str
-
-
 class ResetRequest(BaseModel):
     chat_id: str
 
@@ -385,96 +375,6 @@ async def chat_completions(req: OAIChatCompletionsRequest):
             "X-Accel-Buffering": "no",
         },
     )
-    # main_answer: str = response_text
-    # # if settings.enable_links_correction:
-    # #     try:
-    # #         main_answer = await ref_corrector.replace_markdown_links(main_answer)
-    # #     except Exception:
-    # #         logger.exception("LinkCorrecter failed; continue without correction")
-    #
-    # if settings.enable_links_addition:
-    #     try:
-    #         links: list[str] = await ref_searcher.get_links_from_answer(main_answer)
-    #     except Exception:
-    #         logger.exception("LinkSearcher failed; continue without links")
-    #         links: list[str] = []
-    #     if links:
-    #         main_answer: str = f"{main_answer}\n\nИнтересные ссылки:\n- " + "\n- ".join(links)
-    #
-    # payload = {
-    #     "id": chatcmpl_id,
-    #     "object": "chat.completion",
-    #     "created": created,
-    #     "model": model_name,
-    #     "choices": [{
-    #         "index": 0,
-    #         "message": {"role": "assistant", "content": main_answer},
-    #         "finish_reason": "stop"
-    #     }],
-    #     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-    # }
-    # return JSONResponse(payload)
-
-
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    print(f"Получен запрос от {request.chat_id}: {request.message}")
-    global rag_instance
-
-    if rag_instance is None:
-        raise RuntimeError("RAG is not initialized.")
-
-    try:
-        chat_id = request.chat_id
-        query = request.message.strip()
-        logger.info(f"New request from user {request.chat_id}: {query}")
-        history = dialogue_histories[chat_id][-4:]
-
-        expanded_query = await explain_abbreviations(query, abbreviations)
-        logger.info(f"Query after expanding abbreviations: {expanded_query}")
-
-        resolved_query = await resolve_anaphora(expanded_query, history)
-        logger.info(f"После разрешения анафор: {resolved_query}")
-
-        current_date_str = await get_current_period()
-        formatted_system_prompt = SYSTEM_PROMPT_FOR_MENO.replace(
-            "{current_date}",
-            current_date_str
-        )
-
-        formatted_system_prompt = formatted_system_prompt.replace(
-            "{conversation_history}",
-            str(history)
-        )
-        logger.info(f"Formatted system prompt: {formatted_system_prompt}")
-
-        response_text = await rag_instance.aquery(
-            resolved_query,
-            param=QueryParam(
-                mode=QUERY_MODE,
-                top_k=TOP_K,
-                max_total_tokens=QUERY_MAX_TOKENS,
-                max_=QUERY_MAX_TOKENS,
-                history_turns=len(history),
-                conversation_history=history,
-            ),
-            system_prompt=formatted_system_prompt
-        )
-        answer = response_text
-        # if settings.enable_links_correction:
-        #     answer = await ref_corrector.replace_markdown_links(answer)
-        # if settings.enable_links_addition:
-        #     answer = await ref_searcher.get_formated_answer(answer)
-        dialogue_histories[chat_id].append({"role": "user", "content": query})
-        dialogue_histories[chat_id].append(
-            {"role": "assistant", "content": answer})
-        logger.info(f"Ответ сформирован для {chat_id}: {answer}")
-        return ChatResponse(chat_id=request.chat_id, response=answer)
-    except Exception as e:
-        logger.exception(
-            f"Error while processing request from user {request.chat_id}")
-        return ChatResponse(chat_id=request.chat_id, response="Произошла ошибка при обработке запроса.")
-
 
 @app.post("/clear_history", response_model=ResetResponse)
 async def reset_history(request: ResetRequest):
