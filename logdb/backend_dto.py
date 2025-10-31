@@ -9,4 +9,3 @@ class BackEndDTO:
     def add_message(self, message: Message) -> None:
         self.messages.append(message)
         
-        
