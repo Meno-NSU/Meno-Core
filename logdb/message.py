@@ -1,5 +1,5 @@
 class Message:
-    def init(self) -> None:
+    def __init__(self) -> None:
         self.question: str | None = None
         self.expanded_question: str | None = None
         self.coref_resolved_question: str | None = None

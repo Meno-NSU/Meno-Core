@@ -1,7 +1,7 @@
 from message import Message
 
 class BackEndDTO:
-    def init(self) -> None:
+    def __init__(self) -> None:
         self.session_start_time: int | None = None
         self.session_end_time: int | None = None
         self.messages: list[Message] = []

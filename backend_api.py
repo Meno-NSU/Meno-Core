@@ -188,6 +188,7 @@ async def _build_prompt_and_history(messages: List[OAIMsg]) -> tuple[str, str, L
     # query + history
     last_user_idx = max(i for i, m in enumerate(messages) if m.role == "user")
     query = messages[last_user_idx].content.strip()
+
     raw_hist = messages[:last_user_idx]
     history = [{"role": m.role, "content": m.content}
                for m in raw_hist if m.role in ("user", "assistant")][-4:]
