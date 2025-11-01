@@ -31,6 +31,9 @@ from link_searcher import LinkSearcher
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, get_current_period
 
+from logdb.backend_dto import BackEndDTO
+from logdb.message import Message
+
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
 LINKS_LOG_PATH = getattr(settings, "links_log_path", "logs/links_debug.log")
