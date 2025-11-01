@@ -1,4 +1,4 @@
-from message import Message
+from logdb.message import Message
 
 class BackEndDTO:
     def __init__(self) -> None:
