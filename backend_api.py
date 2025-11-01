@@ -40,7 +40,7 @@ LINKS_LOG_BACKUP_COUNT = getattr(settings, "links_log_backup_count", 5)
 
 logging.basicConfig(
     level=logging.DEBUG,
-    format="%(asctime)s | %(levelname)s | %(message)s",я
+    format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
 
