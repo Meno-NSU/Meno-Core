@@ -295,6 +295,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                         chunks.append(str(part))
                 result = "".join(chunks)
             _, content = _try_extract_response(str(result))
+            collector.add_model_answer(session_id=session_id, text=content)
         except Exception as e:
             logger.exception("chat.completions non-stream error")
             return JSONResponse(

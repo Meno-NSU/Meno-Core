@@ -21,6 +21,9 @@ class LogCollector:
     def add_resolved_question(self, session_id: str, text: str):
         self._unreleased_dtos[session_id].add_resolved_question(text)
 
+    def add_model_answer(self, session_id: str, text: str):
+        self._unreleased_dtos[session_id].add_answer(text)
+
     #потестить
     def print_dto(self, session_id: str):
         dto = self._unreleased_dtos[session_id]
@@ -28,6 +31,9 @@ class LogCollector:
             print('DEFAULT:\n',dto._messages[i]._question)
             print('EXPANDED:\n', dto._messages[i]._expanded_question)
             print('RESOLVED:\n', dto._messages[i]._coref_resolved_question)
+            print('ANSWER:\n', dto._messages[i]._model_answer)
+
+
 
 
 

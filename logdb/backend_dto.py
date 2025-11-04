@@ -19,3 +19,6 @@ class BackEndDTO:
         
     def add_resolved_question(self, text: str) -> None:
         self._messages[len(self._messages) - 1].set_coref_resolved_question(text)
+
+    def add_answer(self, text: str) -> None:
+        self._messages[len(self._messages) - 1].set_model_answer(text)
