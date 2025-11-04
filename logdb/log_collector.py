@@ -15,12 +15,16 @@ class LogCollector:
     def add_expanded_question(self, session_id: str, text: str):
         self._unreleased_dtos[session_id].add_expanded_question(text)
 
+    def add_resolved_question(self, session_id: str, text: str):
+        self._unreleased_dtos[session_id].add_resolved_question(text)
+
     #потестить
     def print_dto(self, session_id: str):
         dto = self._unreleased_dtos[session_id]
         for i in range(dto._messages_size + 1): 
             print('DEFAULT:\n',dto._messages[i]._question)
             print('EXPANDED:\n', dto._messages[i]._expanded_question)
+            print('RESOLVED:\n', dto._messages[i]._coref_resolved_question)
 
 
 

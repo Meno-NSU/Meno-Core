@@ -260,6 +260,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
         expanded_query = query
     try:
         resolved_query: str = await resolve_anaphora(expanded_query, history)
+        collector.add_expanded_question(session_id=session_id, text=resolved_query)
     except Exception:
         resolved_query = expanded_query
 

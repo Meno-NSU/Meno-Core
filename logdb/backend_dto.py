@@ -14,10 +14,10 @@ class BackEndDTO:
         #TODO: здесь нужен лок
         self._messages[self._messages_size].set_question(text)
         
-        
-    def add_expanded_question(self, text: str) ->None:
+    def add_expanded_question(self, text: str) -> None:
         self._messages[self._messages_size].set_expanded_question(text)
+        
+    def add_resolved_question(self, text: str) -> None:
+        self._messages[self._messages_size].set_coref_resolved_question(text)
         #временно:
         self._messages_size += 1
-    
-        
