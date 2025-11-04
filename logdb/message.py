@@ -1,19 +1,19 @@
 
 class Message:
     def __init__(self) -> None:
-        self.question: str | None = None
-        self.expanded_question: str | None = None
-        self.coref_resolved_question: str | None = None
-        self.model_answer : str | None = None
+        self._question: str | None = None
+        self._expanded_question: str | None = None
+        self._coref_resolved_question: str | None = None
+        self._model_answer : str | None = None
 
     def set_question(self, question: str) -> None:
-        self.question = question
+        self._question = question
 
     def set_expanded_question(self, question: str) -> None:
-        self.expanded_question = question
+        self._expanded_question = question
 
     def set_coref_resolved_question(self, question: str) -> None:
-        self.coref_resolved_question = question    
+        self._coref_resolved_question = question    
 
     def set_model_answer(self, answer: str) -> None:
-        self.model_answer = answer
+        self._model_answer = answer

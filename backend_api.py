@@ -31,8 +31,8 @@ from link_searcher import LinkSearcher
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, get_current_period
 
-from logdb.backend_dto import BackEndDTO
-from logdb.message import Message
+
+from logdb.log_collector import LogCollector
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
@@ -47,13 +47,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+log_processor = LogCollector()
+
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
 SCORES_CACHE_FILE = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
 
 _scores_cache: Dict[str, Dict[str, Optional[str]]] = {}
-
 
 def setup_links_logger(path: str, level: str = "DEBUG",
                        max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5) -> logging.Logger:
