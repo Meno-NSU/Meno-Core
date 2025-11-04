@@ -47,7 +47,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-log_processor = LogCollector()
+collector = LogCollector()
 
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
@@ -192,6 +192,11 @@ async def _build_prompt_and_history(messages: List[OAIMsg]) -> tuple[str, str, L
     # query + history
     last_user_idx = max(i for i, m in enumerate(messages) if m.role == "user")
     query = messages[last_user_idx].content.strip()
+
+    #hardcoded!
+    session_id = 'id'
+    collector.add_question(session_id=session_id, text=query)
+    
 
     raw_hist = messages[:last_user_idx]
     history = [{"role": m.role, "content": m.content}
