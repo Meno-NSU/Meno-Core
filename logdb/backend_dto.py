@@ -10,6 +10,13 @@ class BackEndDTO:
         self._messages_size: int = 0
             
     def add_question(self, text: str) -> None:
+        #проверка работоспособности:
+        if (self._messages_size > 5):
+            for i in range(1, 6):
+                print('-----------------')
+                print(self._messages[0]._question)
+                print('-----------------')
+
         self._messages[self._messages_size].set_question(text)
         #временно:
         self._messages_size += 1
