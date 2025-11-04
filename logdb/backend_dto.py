@@ -11,10 +11,10 @@ class BackEndDTO:
             
     def add_question(self, text: str) -> None:
         #проверка работоспособности:
-        if (self._messages_size > 5):
-            for i in range(1, 6):
+        if (self._messages_size > 2):
+            for i in range(0, self._messages_size + 1):
                 print('-----------------')
-                print(self._messages[0]._question)
+                print(self._messages[i]._question)
                 print('-----------------')
 
         self._messages[self._messages_size].set_question(text)
