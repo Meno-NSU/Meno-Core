@@ -2,7 +2,7 @@ from logdb.backend_dto import BackEndDTO
 
 class LogCollector:
     def __init__(self):
-        #Возможно, стоит переименовать
+        #TODO: Возможно, стоит переименовать
         self._unreleased_dtos: dict[str, BackEndDTO] = {}
 
     def add_question(self, session_id: str, text: str):

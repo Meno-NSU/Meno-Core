@@ -193,11 +193,6 @@ async def _build_prompt_and_history(messages: List[OAIMsg]) -> tuple[str, str, L
     last_user_idx = max(i for i, m in enumerate(messages) if m.role == "user")
     query = messages[last_user_idx].content.strip()
 
-    #hardcoded!
-    session_id = 'id'
-    collector.add_question(session_id=session_id, text=query)
-    
-
     raw_hist = messages[:last_user_idx]
     history = [{"role": m.role, "content": m.content}
                for m in raw_hist if m.role in ("user", "assistant")][-4:]
@@ -251,8 +246,12 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
     model_id: str = req.model or "menon-1"
+    #hardcoded
+    session_id = 'id'
 
     formatted_system_prompt, query, history = await _build_prompt_and_history(req.messages)
+
+    collector.add_question(session_id=session_id, text=query)
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)

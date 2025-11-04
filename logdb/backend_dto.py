@@ -17,6 +17,8 @@ class BackEndDTO:
                 print(self._messages[i]._question)
                 print('-----------------')
 
+
+        #TODO: здесь нужен лок
         self._messages[self._messages_size].set_question(text)
         #временно:
         self._messages_size += 1
