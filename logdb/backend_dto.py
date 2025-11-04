@@ -16,7 +16,7 @@ class BackEndDTO:
         
         
     def add_expanded_question(self, text: str) ->None:
-        self._messages[self._messages_size].set_question(text)
+        self._messages[self._messages_size].set_expanded_question(text)
         #временно:
         self._messages_size += 1
     
