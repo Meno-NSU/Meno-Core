@@ -255,12 +255,17 @@ async def chat_completions(req: OAIChatCompletionsRequest):
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
+        collector.add_expanded_question(session_id=session_id, text=expanded_query)
     except Exception:
         expanded_query = query
     try:
         resolved_query: str = await resolve_anaphora(expanded_query, history)
     except Exception:
         resolved_query = expanded_query
+
+    #тест:
+    collector.print_dto(session_id=session_id)
+
 
     async def run_lightrag():
         return await rag_instance.aquery(

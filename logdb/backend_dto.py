@@ -11,17 +11,13 @@ class BackEndDTO:
             
     def add_question(self, text: str) -> None:
         #проверка работоспособности:
-        if (self._messages_size > 2):
-            for i in range(0, self._messages_size + 1):
-                print('-----------------')
-                print(self._messages[i]._question)
-                print('-----------------')
-
-
         #TODO: здесь нужен лок
+        self._messages[self._messages_size].set_question(text)
+        
+        
+    def add_expanded_question(self, text: str) ->None:
         self._messages[self._messages_size].set_question(text)
         #временно:
         self._messages_size += 1
-        
-        
+    
         
