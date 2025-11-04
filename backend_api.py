@@ -255,16 +255,17 @@ async def chat_completions(req: OAIChatCompletionsRequest):
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
-        collector.add_expanded_question(session_id=session_id, text=expanded_query)
+        
     except Exception:
         expanded_query = query
     try:
         resolved_query: str = await resolve_anaphora(expanded_query, history)
-        collector.add_expanded_question(session_id=session_id, text=resolved_query)
     except Exception:
         resolved_query = expanded_query
 
-    #тест:
+    collector.add_expanded_question(session_id=session_id, text=expanded_query)
+    collector.add_resolved_question(session_id=session_id, text=resolved_query)
+    
     collector.print_dto(session_id=session_id)
 
 
