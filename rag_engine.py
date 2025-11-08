@@ -361,8 +361,8 @@ async def initialize_rag() -> LightRAG:
         LightRAG: Инициализированный объект LightRAG.
     """
     try:
-        logger.info("Initializing RAG system")
-        logger.info("Loading tokenizer and embedder model...")
+        logger.info("Initializing RAG system...")
+        logger.info(f"Loading tokenizer and embedder model: {LOCAL_EMBEDDER_NAME}...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
             LOCAL_EMBEDDER_NAME, local_files_only=True
         )
@@ -375,7 +375,7 @@ async def initialize_rag() -> LightRAG:
             local_files_only=True
         )
         emb_model.eval()
-        logger.info("Model loaded successfully")
+        logger.info(f"Model {LOCAL_EMBEDDER_NAME} loaded successfully")
 
         logger.info("Initializing shared data and pipeline status...")
         initialize_share_data()
