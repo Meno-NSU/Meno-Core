@@ -394,13 +394,13 @@ async def initialize_rag() -> LightRAG:
         logger.info(f"Loading tokenizer and reranker model: {LOCAL_RERANKER_PATH}...")
         reranker_tokenizer = AutoTokenizer.from_pretrained(
             LOCAL_RERANKER_PATH,
-            local_files_only=True
+            local_files_only=False
         )
         reranker_model = AutoModelForSequenceClassification.from_pretrained(
             LOCAL_RERANKER_PATH,
             trust_remote_code=True,
             device_map='cuda:0',
-            local_files_only=True
+            local_files_only=False
         )
         reranker_model.eval()
         logger.info(f"Reranker {LOCAL_RERANKER_PATH} loaded successfully")
