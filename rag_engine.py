@@ -1,5 +1,7 @@
 import os
-from typing import List
+from logging import Logger
+from re import Match
+from typing import List, Any
 
 import json
 import logging
@@ -18,8 +20,10 @@ import torch.nn.functional as F
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc, setup_logger
-from nltk import wordpunct_tokenize
+from nltk import wordpunct_tokenize, SnowballStemmer
 from nltk.stem.snowball import SnowballStemmer
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletion
 # from nltk import SnowballStemmer, wordpunct_tokenize
 from rank_bm25 import BM25Okapi
 from transformers import AutoModelForTokenClassification
@@ -130,9 +134,9 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
     if not isinstance(text, str):
         text = "" if text is None else str(text)
 
-    m = _JSON_BLOCK_RE.search(text)
+    m: Match[str] = _JSON_BLOCK_RE.search(text)
     if m:
-        payload = m.group(1)
+        payload: str = m.group(1)
         try:
             obj = json.loads(payload)
             if "response" not in obj:
@@ -148,7 +152,7 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
         except Exception:
             logger.debug("Found ```json block``` but cannot parse; will wrap cleanly")
 
-    m2 = _JSON_OBJECT_RE.search(text)
+    m2: Match[str] = _JSON_OBJECT_RE.search(text)
     if m2:
         try:
             obj = json.loads(m2.group(0))
@@ -196,17 +200,17 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
 
         logger.info(f"Sending request to LLM with {len(messages)} messages, prompt: {prompt}")
 
-        client = openai.AsyncOpenAI(
+        client: AsyncOpenAI = openai.AsyncOpenAI(
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url
         )
 
-        completion = await client.chat.completions.create(
+        completion: ChatCompletion = await client.chat.completions.create(
             model=settings.llm_model_name,
             messages=messages,
             temperature=TEMPERATURE,
         )
-        raw = completion.choices[0].message.content or ""
+        raw: str = completion.choices[0].message.content or ""
         logger.info(f"Received response from LLM, length: {len(raw)}")
 
         return _coerce_llm_response_to_json_block(raw)
@@ -230,7 +234,7 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
     - str: Вопрос с заменёнными аббревиатурами или исходный вопрос, если аббревиатуры не найдены.
     """
     try:
-        snow_stemmer = SnowballStemmer(language='russian')
+        snow_stemmer: SnowballStemmer = SnowballStemmer(language='russian')
         filtered_abbreviations = dict()
         for cur_word in wordpunct_tokenize(question):
             if cur_word in abbreviations:
@@ -254,7 +258,7 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
 
         logger.debug(f"Found abbreviations: {filtered_abbreviations}")
 
-        user_prompt = TEMPLATE_FOR_ABBREVIATION_EXPLAINING.format(
+        user_prompt: str = TEMPLATE_FOR_ABBREVIATION_EXPLAINING.format(
             abbreviations_dict=filtered_abbreviations,
             text_of_question=question
         )
@@ -364,15 +368,15 @@ async def initialize_rag() -> LightRAG:
         logger.info("Initializing RAG system...")
         logger.info(f"Loading tokenizer and embedder model: {LOCAL_EMBEDDER_NAME}...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_EMBEDDER_NAME, local_files_only=True
+            LOCAL_EMBEDDER_NAME,
+            local_files_only=False
         )
-        ENCODER: AutoTokenizer = emb_tokenizer
         emb_model: AutoModel = AutoModel.from_pretrained(
             LOCAL_EMBEDDER_NAME,
             trust_remote_code=True,
             # device_map='cuda:0'
             device_map='cpu',
-            local_files_only=True
+            local_files_only=False
         )
         emb_model.eval()
         logger.info(f"Model {LOCAL_EMBEDDER_NAME} loaded successfully")
@@ -404,10 +408,10 @@ async def initialize_rag() -> LightRAG:
             LOCAL_EMBEDDER_NAME, trust_remote_code=True, device_map='cpu', local_files_only=True
         )
         token_cls.eval()
-        embedder = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
+        embedder: GTEEmbedding = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
 
         chunk_db, bm25 = await build_chunks_db_and_bm25(WORKING_DIR)
-        logger2 = logging.getLogger("links")
+        logger2: Logger = logging.getLogger("links")
         logger2.debug("RAG init: chunks=%d", len(chunk_db))
         try:
             logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
@@ -422,12 +426,12 @@ async def initialize_rag() -> LightRAG:
 
 # ---------- Date string generation ----------
 async def get_current_period():
-    today = datetime.now(pytz.timezone("Asia/Novosibirsk"))
-    day = today.day
-    month = today.month
-    year = today.year
+    today: datetime = datetime.now(pytz.timezone("Asia/Novosibirsk"))
+    day: int = today.day
+    month: int = today.month
+    year: int = today.year
 
-    month_names = {
+    month_names: dict[int, str] = {
         1: "января", 2: "февраля", 3: "марта", 4: "апреля",
         5: "мая", 6: "июня", 7: "июля", 8: "августа",
         9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
@@ -463,8 +467,8 @@ class GTEEmbedding(torch.nn.Module):
 
     def _process_token_weights(self, token_weights: np.ndarray, input_ids: list):
         result = defaultdict(int)
-        unused = {self.tokenizer.cls_token_id, self.tokenizer.eos_token_id,
-                  self.tokenizer.pad_token_id, self.tokenizer.unk_token_id}
+        unused: set[Any] = {self.tokenizer.cls_token_id, self.tokenizer.eos_token_id,
+                            self.tokenizer.pad_token_id, self.tokenizer.unk_token_id}
         for w, idx in zip(token_weights, input_ids):
             if idx not in unused and w > 0:
                 token = self.tokenizer.decode([int(idx)])
