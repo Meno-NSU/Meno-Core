@@ -398,7 +398,7 @@ async def initialize_rag() -> LightRAG:
         reranker_model = AutoModelForSequenceClassification.from_pretrained(
             LOCAL_RERANKER_PATH,
             trust_remote_code=True,
-            device_map='cuda:0'
+            device_map='cpu',
         )
         reranker_model.eval()
         logger.info(f"Reranker {LOCAL_RERANKER_PATH} loaded successfully")
