@@ -1,8 +1,9 @@
+import math
 import os
 from functools import partial
 from logging import Logger
 from re import Match, Pattern
-from typing import List, Any
+from typing import List, Any, Optional
 
 import json
 import logging
@@ -339,7 +340,7 @@ async def gte_hf_rerank(
         tokenizer,
         reranker,
         top_n: Optional[int] = None,
-) -> List[Dict[str, Any]]:
+) -> List[dict[str, Any]]:
     device = next(reranker.parameters()).device
     scores = []
     minibatch_size = 4
