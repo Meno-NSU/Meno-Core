@@ -293,7 +293,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                     if part:
                         chunks.append(str(part))
                 result = "".join(chunks)
-            _, content = str(result)
+            content = str(result)
             collector.add_model_answer(session_id=session_id, text=content)
         except Exception as e:
             logger.exception("chat.completions non-stream error")
