@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     embedder_dim: int = 768
     embedder_max_tokens: int = 4096
 
+    # RERANKER
+    local_reranker_path: Path
+
     # LIGHT RAG
     temperature: float = 0.3
     query_max_tokens: int = 4000

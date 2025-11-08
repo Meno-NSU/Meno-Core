@@ -31,7 +31,6 @@ from link_searcher import LinkSearcher
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, get_current_period
 
-
 from logdb.log_collector import LogCollector
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
@@ -55,6 +54,7 @@ dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 SCORES_CACHE_FILE = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
 
 _scores_cache: Dict[str, Dict[str, Optional[str]]] = {}
+
 
 def setup_links_logger(path: str, level: str = "DEBUG",
                        max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5) -> logging.Logger:
@@ -126,9 +126,9 @@ async def lifespan(app: FastAPI):
     try:
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
-            logger.info(f"📚 Загружено сокращений: {len(abbreviations)}")
+            logger.info(f"📚 Successfully load {len(abbreviations)} abbreviations.")
     except Exception as e:
-        logger.exception("Не удалось загрузить файл сокращений")
+        logger.exception("Unable to load abbreviations", exc_info=e)
 
     yield  # <-- здесь FastAPI продолжает работу
     # Здесь можно вызвать await rag_instance.cleanup(), если нужно
@@ -246,7 +246,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
     model_id: str = req.model or "menon-1"
-    #hardcoded
+    # hardcoded
     session_id = 'id'
 
     collector.create_message(session_id=session_id)
@@ -257,7 +257,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
-        
+
     except Exception:
         expanded_query = query
     try:
@@ -267,9 +267,8 @@ async def chat_completions(req: OAIChatCompletionsRequest):
 
     collector.add_expanded_question(session_id=session_id, text=expanded_query)
     collector.add_resolved_question(session_id=session_id, text=resolved_query)
-    
-    collector.print_dto(session_id=session_id)
 
+    collector.print_dto(session_id=session_id)
 
     async def run_lightrag():
         return await rag_instance.aquery(
@@ -394,6 +393,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
 
 @app.post("/clear_history", response_model=ResetResponse)
 async def reset_history(request: ResetRequest):
