@@ -203,40 +203,40 @@ _JSON_BLOCK_RE = re.compile(r"```json\s*([\s\S]*?)\s*```", re.IGNORECASE)
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*}", re.MULTILINE)
 
 
-def _try_extract_response(text: str) -> tuple[bool, str]:
-    """
-    Пытается достать поле 'response' из текстового ответа:
-    - ищем ```json ...``` и парсим объект;
-    - если нет, ищем первый {...} и парсим;
-    Возвращает (found, value). Если не нашли корректный JSON — value=исходный text.
-    """
-    if not isinstance(text, str):
-        text = "" if text is None else str(text)
-
-    payload = None
-    m = _JSON_BLOCK_RE.search(text)
-    if m:
-        payload = m.group(1).strip()
-    else:
-        m2 = _JSON_OBJECT_RE.search(text)
-        if m2:
-            payload = m2.group(0).strip()
-
-    if payload:
-        try:
-            obj = json.loads(payload)
-            resp = (
-                    obj.get("response")
-                    or obj.get("answer")
-                    or obj.get("output")
-                    or obj.get("content")
-            )
-            if isinstance(resp, str):
-                return True, resp
-        except Exception:
-            pass
-
-    return False, text
+# def _try_extract_response(text: str) -> tuple[bool, str]:
+#     """
+#     Пытается достать поле 'response' из текстового ответа:
+#     - ищем ```json ...``` и парсим объект;
+#     - если нет, ищем первый {...} и парсим;
+#     Возвращает (found, value). Если не нашли корректный JSON — value=исходный text.
+#     """
+#     if not isinstance(text, str):
+#         text = "" if text is None else str(text)
+#
+#     payload = None
+#     m = _JSON_BLOCK_RE.search(text)
+#     if m:
+#         payload = m.group(1).strip()
+#     else:
+#         m2 = _JSON_OBJECT_RE.search(text)
+#         if m2:
+#             payload = m2.group(0).strip()
+#
+#     if payload:
+#         try:
+#             obj = json.loads(payload)
+#             resp = (
+#                     obj.get("response")
+#                     or obj.get("answer")
+#                     or obj.get("output")
+#                     or obj.get("content")
+#             )
+#             if isinstance(resp, str):
+#                 return True, resp
+#         except Exception:
+#             pass
+#
+#     return False, text
 
 
 @app.post("/v1/chat/completions")
@@ -293,7 +293,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                     if part:
                         chunks.append(str(part))
                 result = "".join(chunks)
-            _, content = _try_extract_response(str(result))
+            _, content = str(result)
             collector.add_model_answer(session_id=session_id, text=content)
         except Exception as e:
             logger.exception("chat.completions non-stream error")
