@@ -4,8 +4,11 @@ from datetime import datetime
 from sqlalchemy import DateTime, Text, UUID, Integer
 import uuid
 
+class Base(DeclarativeBase):
+    pass
 
-class Turn(DeclarativeBase):
+
+class Turn(Base):
     __tablename__ = "turns"
 
     conversation_id: Mapped[UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
