@@ -5,7 +5,6 @@ class LogCollector:
         #TODO: Возможно, стоит переименовать
         self._unreleased_dtos: dict[str, BackEndDTO] = {}
 
-
     def create_message(self, session_id: str):
         if not(session_id in self._unreleased_dtos.keys()):
             self._unreleased_dtos[session_id] = BackEndDTO(session_id=session_id)
