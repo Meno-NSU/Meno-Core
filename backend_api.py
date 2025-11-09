@@ -268,7 +268,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     collector.add_expanded_question(session_id=session_id, text=expanded_query)
     collector.add_resolved_question(session_id=session_id, text=resolved_query)
 
-    collector.print_dto(session_id=session_id)
+    #collector.print_dto(session_id=session_id)
 
     async def run_lightrag():
         return await rag_instance.aquery(
@@ -295,6 +295,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                 result = "".join(chunks)
             content = str(result)
             collector.add_model_answer(session_id=session_id, text=content)
+            collector.print_dto(session_id=session_id)
         except Exception as e:
             logger.exception("chat.completions non-stream error")
             return JSONResponse(
