@@ -22,7 +22,7 @@ class Turn(Base):
     conversation: Mapped["Conversation"] = relationship("Conversation", back_populates="turns")
 
 
-class Conversation(DeclarativeBase):
+class Conversation(Base):
     __tablename__ = "conversations"
 
     conversation_id: Mapped[UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
