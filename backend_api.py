@@ -251,9 +251,13 @@ async def chat_completions(req: OAIChatCompletionsRequest):
 
     collector.create_message(session_id=session_id)
 
+    collector.print_dto(session_id=session_id)
+
     formatted_system_prompt, query, history = await _build_prompt_and_history(req.messages)
 
     collector.add_question(session_id=session_id, text=query)
+
+    collector.print_dto(session_id=session_id)
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
