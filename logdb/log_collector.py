@@ -1,13 +1,46 @@
 from logdb.backend_dto import BackEndDTO
 from datetime import datetime
 
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy import String, create_engine
+from datetime import datetime
+from sqlalchemy import DateTime, Text
+from db_models.db_models import Base, Conversation, Turn
 
 class LogCollector:
     def __init__(self):
         #TODO: Возможно, стоит переименовать
         self._unreleased_dtos: dict[str, BackEndDTO] = {}
 
+        self._db_url = 'postgresql://logdb:123@localhost:5432/logdb' #пока захардкодил
+        self._db_engine = create_engine(self._db_url, echo=True)
+
+        Session = sessionmaker(bind=self._engine) #тут надо с менеджером контекстным
+        self._session = Session()
+
+        self._test_counter = 0
+
+
+    def _add_to_db(self, session_id: str, dto: BackEndDTO) -> None:
+        conversation = Conversation(user_id=session_id, start_time=datetime.utcnow(), end_time=datetime.utcnow())
+
+        messages = dto.get_messages()
+        for i in range(len(messages)):
+            msg = messages[i]
+            turn = Turn(turn=i, original_question=msg.get_question(), expanded_question=msg.get_expanded_question(), resolved_question=msg.get_coref_resolved_question(), answer=msg.get_answer())
+            conversation.turns.append(turn)  
+
+        self._session.add(conversation)  
+        self._session.commit()  
+
+    
+
     def create_message(self, session_id: str):
+        self._test_counter += 1
+
+        if (self._test_counter > 3) and (session_id in self._unreleased_dtos.keys()):
+            self._add_to_db(session_id=session_id, dto=self._unreleased_dtos[session_id])
+            self._unreleased_dtos.pop(session_id)
 
         if not(session_id in self._unreleased_dtos.keys()):
             self._unreleased_dtos[session_id] = BackEndDTO(session_id=session_id, start_time=datetime.utcnow())

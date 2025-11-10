@@ -23,3 +23,7 @@ class BackEndDTO:
 
     def add_answer(self, text: str) -> None:
         self._messages[len(self._messages) - 1].set_model_answer(text)
+
+    def get_messages(self) -> list[Message]:
+        return self._messages
+        

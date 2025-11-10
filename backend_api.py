@@ -249,16 +249,11 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     # hardcoded
     session_id = 'id'
 
-    
-    print('ch1')
-
     collector.create_message(session_id=session_id)
 
     formatted_system_prompt, query, history = await _build_prompt_and_history(req.messages)
 
     collector.add_question(session_id=session_id, text=query)
-
-    print('ch2')
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
@@ -273,14 +268,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     collector.add_expanded_question(session_id=session_id, text=expanded_query)
     collector.add_resolved_question(session_id=session_id, text=resolved_query)
 
-    print('ch3')
-
-
-    #collector.print_dto(session_id=session_id)
-
-    #collector.update_time(session_id=session_id)
-
-    collector.print_dto(session_id=session_id)
+    collector.update_time(session_id=session_id)
 
     async def run_lightrag():
         return await rag_instance.aquery(
