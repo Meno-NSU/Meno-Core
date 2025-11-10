@@ -276,9 +276,9 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     print('ch3')
 
 
-    collector.print_dto(session_id=session_id)
+    #collector.print_dto(session_id=session_id)
 
-    collector.update_time(session_id=session_id)
+    #collector.update_time(session_id=session_id)
 
     collector.print_dto(session_id=session_id)
 
