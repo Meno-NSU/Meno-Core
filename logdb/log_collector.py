@@ -15,7 +15,7 @@ class LogCollector:
         self._db_url = 'postgresql://logdb:123@localhost:5432/logdb' #пока захардкодил
         self._db_engine = create_engine(self._db_url, echo=True)
 
-        Session = sessionmaker(bind=self._engine) #тут надо с менеджером контекстным
+        Session = sessionmaker(bind=self._db_engine) #тут надо с менеджером контекстным
         self._session = Session()
 
         self._test_counter = 0
