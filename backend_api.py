@@ -268,10 +268,9 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     collector.add_expanded_question(session_id=session_id, text=expanded_query)
     collector.add_resolved_question(session_id=session_id, text=resolved_query)
 
+    #collector.update_time(session_id=session_id)
 
-    collector.update_time(session_id=session_id)
-
-    #collector.print_dto(session_id=session_id)
+    collector.print_dto(session_id=session_id)
 
     async def run_lightrag():
         return await rag_instance.aquery(
