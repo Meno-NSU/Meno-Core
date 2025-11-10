@@ -5,7 +5,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy import String, create_engine
 from datetime import datetime
 from sqlalchemy import DateTime, Text
-from db_models.db_models import Base, Conversation, Turn
+from logdb.db_models.db_models import Base, Conversation, Turn
 
 class LogCollector:
     def __init__(self):
