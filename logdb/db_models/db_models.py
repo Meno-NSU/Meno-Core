@@ -13,10 +13,9 @@ class Turn(Base):
 
     conversation_id: Mapped[UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
 
-
     conversation_id: Mapped[UUID] = mapped_column(
         UUID, 
-        ForeignKey('conversations.conversation_id'),  # ← ВОТ ЭТОГО НЕТ!
+        ForeignKey('conversations.conversation_id'),
         primary_key=True
     )
 
