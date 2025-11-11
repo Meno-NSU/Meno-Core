@@ -1,5 +1,5 @@
 from logdb.backend_dto import BackEndDTO
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy import String, create_engine
@@ -36,12 +36,19 @@ class LogCollector:
     
 
     def create_message(self, session_id: str):
-        self._test_counter += 1
+        delta = timedelta(seconds=30)
 
-        if (self._test_counter > 3) and (session_id in self._unreleased_dtos.keys()):
-            self._add_to_db(session_id=session_id, dto=self._unreleased_dtos[session_id])
-            self._unreleased_dtos.pop(session_id)
+        if (session_id in self._unreleased_dtos.keys()):
+            delta = timedelta(seconds=30)
+            dto = self._unreleased_dtos[session_id]
 
+            start_time = dto._session_start_time #не круто
+            end_time = dto._session_end_time
+
+            if (abs(start_time - end_time) >= delta):
+                self._add_to_db(session_id=session_id, dto=dto)
+                self._unreleased_dtos.pop(session_id)
+                
         if not(session_id in self._unreleased_dtos.keys()):
             self._unreleased_dtos[session_id] = BackEndDTO(session_id=session_id, start_time=datetime.utcnow())
 
