@@ -196,6 +196,13 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kw
 
 async def generate_with_llm(prompt: str, system_prompt: str = None, history_messages: list = [], **kwargs):
     kwargs.pop('enable_cot', None)
+    extra_body = {
+        "chat_template_kwargs": {
+            "enable_thinking": False
+        }
+    }
+    if "extra_body" in kwargs:
+        extra_body.update(kwargs["extra_body"])
     generated_result = await openai_complete_if_cache(
         model=settings.llm_model_name,
         prompt=prompt,
@@ -205,13 +212,14 @@ async def generate_with_llm(prompt: str, system_prompt: str = None, history_mess
         base_url=settings.openai_base_url,
         temperature=TEMPERATURE,
         enable_cot=False,
-        **kwargs
+        extra_body=extra_body,
+        **{k: v for k, v in kwargs.items() if k != "extra_body"}
     )
+    logger.info(f"Full raw answer: {generated_result.strip()}")
     thinking_end_position = generated_result.find(THINK_END_TOKEN)
     if thinking_end_position >= 0:
         logger.info(f"Reasoning part was removed from 0 to: {thinking_end_position} position")
         generated_result = generated_result[(thinking_end_position + len(THINK_END_TOKEN)):]
-    logger.info(f"Full raw answer: {generated_result.strip()}")
     return generated_result.strip()
 
 
