@@ -209,7 +209,9 @@ async def generate_with_llm(prompt: str, system_prompt: str = None, history_mess
     )
     thinking_end_position = generated_result.find(THINK_END_TOKEN)
     if thinking_end_position >= 0:
+        logger.info(f"Reasoning part was removed from 0 to: {thinking_end_position} position")
         generated_result = generated_result[(thinking_end_position + len(THINK_END_TOKEN)):]
+    logger.info(f"Full raw answer: {generated_result.strip()}")
     return generated_result.strip()
 
 
