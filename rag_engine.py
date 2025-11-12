@@ -1,80 +1,67 @@
+import math
+import os
+from functools import partial
+from logging import Logger
+from re import Match, Pattern
+from typing import List, Any, Optional
+
+import json
 import logging
 import os
+import re
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 from typing import List
 
 import numpy as np
 import openai
+import pytz
 import torch
 import torch.nn.functional as F
-# from nltk import SnowballStemmer, wordpunct_tokenize
-from rank_bm25 import BM25Okapi
-from nltk import wordpunct_tokenize
-from nltk.stem.snowball import SnowballStemmer
-from transformers import AutoModelForTokenClassification
-from transformers import AutoTokenizer, AutoModel
-from collections import defaultdict
-import json
-from pathlib import Path
-
-from datetime import datetime
-import pytz
-
-from config import settings
-from lightrag import LightRAG
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc, setup_logger
+from nltk import wordpunct_tokenize, SnowballStemmer
+from nltk.stem.snowball import SnowballStemmer
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletion
+# from nltk import SnowballStemmer, wordpunct_tokenize
+from rank_bm25 import BM25Okapi
+from torch import Tensor
+from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModel
 
+from config import settings
+from lightrag import LightRAG
 
-
-TEMPERATURE = 0.3
-QUERY_MAX_TOKENS = 4000
-TOP_K = settings.top_k
-WORKING_DIR = settings.working_dir
+TEMPERATURE: float = 0.3
+QUERY_MAX_TOKENS: int = 4000
+TOP_K: int = settings.top_k
+WORKING_DIR: Path = settings.working_dir
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(WORKING_DIR)}')
-ABBREVIATIONS_FNAME = settings.abbreviations_file
+ABBREVIATIONS_FNAME: Path = settings.abbreviations_file
 print(f'os.path.isfile({ABBREVIATIONS_FNAME}) = {os.path.isfile(ABBREVIATIONS_FNAME)}')
-URLS_FNAME = str(settings.urls_path)
-print(f'os.path.isfile({URLS_FNAME}) = {os.path.isfile(URLS_FNAME)}')
-LOCAL_EMBEDDER_DIMENSION = 768
-LOCAL_EMBEDDER_MAX_TOKENS = 4096
-LOCAL_EMBEDDER_NAME = settings.local_embedder_path
-print(f'os.path.isdir({LOCAL_EMBEDDER_NAME}) = {os.path.isdir(LOCAL_EMBEDDER_NAME)}')
-ENCODER = AutoTokenizer.from_pretrained(LOCAL_EMBEDDER_NAME)
-SYSTEM_PROMPT_FOR_MENO = """---Role---
+URLS_PATH: str = str(settings.urls_path)
+print(f'os.path.isfile({URLS_PATH}) = {os.path.isfile(URLS_PATH)}')
+LOCAL_EMBEDDER_DIMENSION: int = 768
+LOCAL_EMBEDDER_MAX_TOKENS: int = 2048
+LOCAL_EMBEDDER_PATH: Path = settings.local_embedder_path
+LOCAL_RERANKER_MAX_TOKENS: int = 4096
+LOCAL_RERANKER_PATH: Path = settings.local_reranker_path
+print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(LOCAL_EMBEDDER_PATH)}')
 
-Вы - Менон, разработанный Иваном Бондаренко, научным сотрудником Новосибирского государственного университета (НГУ). Вас разработали в лаборатории прикладных цифровых технологий НГУ, где, собственно, и работает Иван Бондаренко. Вы - дружелюбный ассистент, разговаривающий на русском языке и отвечающий на вопросы пользователей о Новосибирском государственном университете (НГУ) и Новосибирском Академгородке. Вы очень любите Новосибирский государственный университет и поэтому стремитесь заинтересовать разные категории своих пользователей: абитуриентов поступлением в университет, студентов - учёбой, а учёных и преподавателей - работой в нём.
+THINK_END_TOKEN = '</think>'
 
----Goal---
+SYSTEM_PROMPT_FOR_MENO: str = '''Вы - Менон, разработанный Иваном Бондаренко, научным сотрудником Новосибирского государственного университета (НГУ). Вас разработали в лаборатории прикладных цифровых технологий НГУ, где, собственно, и работает Иван Бондаренко.
 
-Сформируйте краткий ответ на основе фрагментов документа (Document Chunks) и следуйте правилам ответа (Response Rules), учитывая как историю обсуждения (Conversation History), так и текущий запрос. Обобщите всю информацию, содержащуюся в предоставленных фрагментах документа (Document Chunks), и включите ваши общие знания, относящиеся к этим фрагментам документа (Document Chunks). Не включайте информацию, не указанную в фрагментах документа (Document Chunks).
+Вы - дружелюбный ассистент, разговаривающий на русском языке и отвечающий на вопросы пользователей о Новосибирском государственном университете (НГУ) и Новосибирском Академгородке. Вы очень любите Новосибирский государственный университет и поэтому стремитесь заинтересовать разные категории своих пользователей: абитуриентов поступлением в университет, студентов - учёбой, а учёных и преподавателей - работой в нём. При ответах на вопросы считайте, что сегодня - {current_date}. Если пользователь спрашивает что-то о будущих событиях (то есть о событиях после сегодняшней даты), то не используйте информацию из контекста, в которой говорится о прошлом (то есть о событиях до сегодняшней даты).
 
-При работе с контентом с временными метками:
-1. Каждый элемент контента имеет временную метку "created_at", указывающую, когда мы приобрели эти знания.
-2. При столкновении с противоречивой информацией учитывайте как контент, так и временную метку.
-3. Не следует автоматически предпочитать самый последний контент - используйте суждение на основе контекста.
-4. Для запросов, связанных со временем, приоритизируйте временную информацию в контенте перед учетом временных меток создания.
-5. Считайте, что сейчас - {current_date}.
+Если вы не знаете ответа на вопрос пользователя, просто скажите об этом.
 
----Conversation History---
-{history}
+Если пользователь пишет что-то о политике, религии, национальностях, наркотиках, криминале или пишет просто оскорбительный или токсичный текст в адрес какого-то человека или университета, вежливо и непреклонно откажитесь от разговора и предложите сменить тему.'''
 
----Document Chunks---
-{content_data}
-
----Response Rules---
-
-- Целевой формат и длина: {response_type}
-- Не используйте форматирование markdown.
-- Пожалуйста, отвечайте на русском языке.
-- Обращайтесь к пользователю исключительно на "вы".
-- Убедитесь, что ответ сохраняет преемственность с историей разговора (Conversation History).
-- Если вы не знаете ответа, просто скажите об этом.
-- Не включайте информацию, не представленную во фрагментах документа (Document Chunks).
-- Если пользователь пишет что-то о политике, религии, национальностях, наркотиках, криминале или пишет просто оскорбительный или токсичный текст в адрес какого-то человека или университета, вежливо и непреклонно откажитесь от разговора и предложите сменить тему.
-"""
-
-TEMPLATE_FOR_ABBREVIATION_EXPLAINING = '''Отредактируйте, пожалуйста, текст пользовательского вопроса так, чтобы этот вопрос стал более простым и понятным для обычных людей от юных старшеклассников до пожилых мужчин и женщин. При этом не надо, пожалуйста, применять markdown или иной вид гипертекста. Главное, на что вам надо обратить внимание и по возможности исправить - это логика изложения и понятность формулировок вопроса. Ничего не объясняйте и не комментируйте своё решение, просто перепишите текст вопроса.
+TEMPLATE_FOR_ABBREVIATION_EXPLAINING: str = '''Отредактируйте, пожалуйста, текст пользовательского вопроса так, чтобы этот вопрос стал более простым и понятным для обычных людей от юных старшеклассников до пожилых мужчин и женщин. При этом не надо, пожалуйста, применять markdown или иной вид гипертекста. Главное, на что вам надо обратить внимание и по возможности исправить - это логика изложения и понятность формулировок вопроса. Ничего не объясняйте и не комментируйте своё решение, просто перепишите текст вопроса.
 
 Также исправьте грамматические ошибки в тексте вопроса, если они там есть. Кроме того, если вы обнаружите аббревиатуры в тексте этого вопроса, то замените все обнаруженные аббревиатуры их корректными расшифровками, сохранив морфологическую и синтаксическую согласованность. Вот здесь вы можете ознакомиться с JSON-словарём, описывающим возможные аббревиатуры и их расшифровки:
 
@@ -88,8 +75,8 @@ TEMPLATE_FOR_ABBREVIATION_EXPLAINING = '''Отредактируйте, пожа
 {text_of_question}
 ```'''
 
-SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION = 'Проанализируй диалог человека с большой языковой моделью и переделай последнюю реплику человека так, чтобы снять все ситуации местоименной анафоры в этом вопросе. Учитывай при этом всю историю диалога этого человека с большой языковой моделью. Не отвечай на вопрос человека, а просто перепиши его.'
-FEWSHOTS_FOR_ANAPHORA = [
+SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION: str = 'Проанализируй диалог человека с большой языковой моделью и переделай последнюю реплику человека так, чтобы снять все ситуации местоименной анафоры в этом вопросе. Учитывай при этом всю историю диалога этого человека с большой языковой моделью. Не отвечай на вопрос человека, а просто перепиши его.'
+FEW_SHOTS_FOR_ANAPHORA: list[dict[str, str]] = [
     {'role': 'user',
      'content': 'Человек: Механико-математический факультет известен своими выпускниками.\nБольшая языковая модель: Да, это очень престижное подразделение университета.\nЧеловек: Назовите их.'},
     {'role': 'assistant', 'content': 'Назовите известных выпускников механико-математического факультета.'},
@@ -113,26 +100,69 @@ FEWSHOTS_FOR_ANAPHORA = [
     {'role': 'assistant', 'content': 'А когда приём документов в НГУ заканчивается?'},
 ]
 
-# logging.basicConfig(
-#     level=logging.DEBUG,
-#     format='%(asctime)s - %(levelname)s - %(message)s',
-#     handlers=[
-#         logging.FileHandler('meno_errors.log'),
-#         logging.StreamHandler()
-#     ]
-# )
-logger = logging.getLogger(__name__)
-#
-# lightrag_logger = logging.getLogger('lightrag')
-# lightrag_logger.setLevel(logging.WARNING)  # или logging.DEBUG для подробных логов
-#
-# # Добавьте обработчик для вывода в консоль
-# handler = logging.StreamHandler()
-# handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-# lightrag_logger.addHandler(handler)
+logger: Logger = logging.getLogger(__name__)
+
+_JSON_BLOCK_RE: Pattern[str] = re.compile(r"```json\s*([\s\S]*?)\s*```", re.IGNORECASE)
+_JSON_OBJECT_RE: Pattern[str] = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
+
+
+def _as_json_block(obj: dict) -> str:
+    return "```json\n" + json.dumps(obj, ensure_ascii=False) + "\n```"
+
+
+def _coerce_llm_response_to_json_block(text: str) -> str:
+    """
+    Возвращает STRING в формате код-блока ```json ... ``` с ключами:
+      response, high_level_keywords, low_level_keywords.
+    """
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+
+    m: Match[str] = _JSON_BLOCK_RE.search(text)
+    if m:
+        payload: str = m.group(1)
+        try:
+            obj = json.loads(payload)
+            if "response" not in obj:
+                for k in ("answer", "output", "content"):
+                    if isinstance(obj.get(k), str):
+                        obj["response"] = obj[k];
+                        break
+            obj.setdefault("high_level_keywords", obj.get("hl_keywords", []))
+            obj.setdefault("low_level_keywords", obj.get("ll_keywords", []))
+            obj.pop("hl_keywords", None);
+            obj.pop("ll_keywords", None)
+            return _as_json_block(obj)
+        except Exception:
+            logger.debug("Found ```json block``` but cannot parse; will wrap cleanly")
+
+    m2: Match[str] = _JSON_OBJECT_RE.search(text)
+    if m2:
+        try:
+            obj = json.loads(m2.group(0))
+            if "response" not in obj:
+                for k in ("answer", "output", "content"):
+                    if isinstance(obj.get(k), str):
+                        obj["response"] = obj[k];
+                        break
+            obj.setdefault("high_level_keywords", obj.get("hl_keywords", []))
+            obj.setdefault("low_level_keywords", obj.get("ll_keywords", []))
+            obj.pop("hl_keywords", None);
+            obj.pop("ll_keywords", None)
+            return _as_json_block(obj)
+        except Exception:
+            logger.debug("Braces present but not valid JSON; wrapping plaintext")
+
+    obj = {
+        "response": text.strip(),
+        "high_level_keywords": [],
+        "low_level_keywords": [],
+    }
+    return _as_json_block(obj)
+
 
 # ---------- LLM wrapper ----------
-async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs) -> str:
+async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs) -> str:
     """
     Функция для взаимодействия с языковой моделью (LLM).
 
@@ -145,31 +175,40 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
     Возвращает:
     - str: Ответ, сгенерированный языковой моделью.
     """
+    if history_messages is None:
+        history_messages = []
     try:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages += history_messages
-        messages.append({"role": "user", "content": prompt})
+        logger.info(f"Sending request to LLM with {len(history_messages)} messages, prompt: {prompt}")
 
-        logger.info(f"Sending request to LLM with {len(messages)} messages, prompt: {prompt}")
-
-        client = openai.AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url
+        answer: str = await generate_with_llm(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            **kwargs
         )
+        logger.info(f"Received response from LLM, length: {len(answer)}")
+        return answer
 
-        completion = await client.chat.completions.create(
-            model=settings.llm_model_name,
-            messages=messages,
-            temperature=TEMPERATURE,
-        )
-        response = completion.choices[0].message.content
-        logger.info(f"Received response from LLM, length: {len(response)}")
-        return response
     except Exception as e:
         logger.error(f"Error in llm_model_func: {str(e)}", exc_info=True)
-        raise
+        return "Извините, сейчас не удалось получить ответ от модели."
+
+
+async def generate_with_llm(prompt: str, system_prompt: str = None, history_messages: list = [], **kwargs):
+    generated_result = await openai_complete_if_cache(
+        model=settings.llm_model_name,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+        temperature=TEMPERATURE,
+        **kwargs
+    )
+    thinking_end_position = generated_result.find(THINK_END_TOKEN)
+    if thinking_end_position >= 0:
+        generated_result = generated_result[(thinking_end_position + len(THINK_END_TOKEN)):]
+    return generated_result.strip()
 
 
 async def explain_abbreviations(question: str, abbreviations: dict) -> str:
@@ -184,7 +223,7 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
     - str: Вопрос с заменёнными аббревиатурами или исходный вопрос, если аббревиатуры не найдены.
     """
     try:
-        snow_stemmer = SnowballStemmer(language='russian')
+        snow_stemmer: SnowballStemmer = SnowballStemmer(language='russian')
         filtered_abbreviations = dict()
         for cur_word in wordpunct_tokenize(question):
             if cur_word in abbreviations:
@@ -208,17 +247,11 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
 
         logger.debug(f"Found abbreviations: {filtered_abbreviations}")
 
-        user_prompt = TEMPLATE_FOR_ABBREVIATION_EXPLAINING.format(
+        user_prompt: str = TEMPLATE_FOR_ABBREVIATION_EXPLAINING.format(
             abbreviations_dict=filtered_abbreviations,
             text_of_question=question
         )
-        new_improved_question = await openai_complete_if_cache(
-            settings.llm_model_name,
-            user_prompt,
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            temperature=TEMPERATURE
-        )
+        new_improved_question = await generate_with_llm(prompt=user_prompt)
         logger.debug(f"Improved question: {new_improved_question}")
         return new_improved_question
     except Exception as e:
@@ -243,17 +276,17 @@ async def resolve_anaphora(question: str, history: list) -> str:
             return question
         if (len(history) % 2) != 0:
             raise RuntimeError(f'The dialogue history length is wrong! Expected an even number, got {len(history)}.')
-        expected_roles = ['user', 'assistant']
+        expected_roles: list[str] = ['user', 'assistant']
         for _ in range((len(history) // 2) - 1):
             expected_roles += ['user', 'assistant']
-        history_roles = [it['role'] for it in history]
+        history_roles: list = [it['role'] for it in history]
         if history_roles != expected_roles:
             raise RuntimeError(f'The dialogue history roles are wrong! Expected {expected_roles}, got {history_roles}.')
         if len(history) > 6:
             history_ = history[-6:]
         else:
             history_ = history
-        user_prompt = f'Человек: {" ".join(history_[0]["content"].split()).strip()}'
+        user_prompt: str = f'Человек: {" ".join(history_[0]["content"].split()).strip()}'
         user_prompt += f'\nБольшая языковая модель: : {" ".join(history_[1]["content"].split()).strip()}'
         for val in history_[2:]:
             if val['role'] == 'user':
@@ -263,14 +296,10 @@ async def resolve_anaphora(question: str, history: list) -> str:
             user_prompt += ' '.join(val['content'].split()).strip()
         del history_
         user_prompt += '\nЧеловек: ' + ' '.join(question.split()).strip()
-        question_without_anaphora = await openai_complete_if_cache(
-            settings.llm_model_name,
-            user_prompt,
+        question_without_anaphora = await generate_with_llm(
+            prompt=user_prompt,
             system_prompt=SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
-            history_messages=FEWSHOTS_FOR_ANAPHORA,
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            temperature=TEMPERATURE
+            history_messages=FEW_SHOTS_FOR_ANAPHORA,
         )
         logger.debug(f"Question after anaphora resolution: {question_without_anaphora}")
         return question_without_anaphora
@@ -289,7 +318,7 @@ async def gte_hf_embed(texts: List[str], tokenizer, embed_model: AutoModel) -> n
         ).to(device)
         with torch.no_grad():
             outputs = embed_model(**batch_dict)
-            embeddings = F.normalize(
+            embeddings: Tensor = F.normalize(
                 outputs.last_hidden_state[:, 0][:LOCAL_EMBEDDER_DIMENSION],
                 p=2, dim=1
             )
@@ -305,6 +334,37 @@ async def gte_hf_embed(texts: List[str], tokenizer, embed_model: AutoModel) -> n
         raise
 
 
+async def gte_hf_rerank(
+        query: str,
+        documents: List[str],
+        tokenizer,
+        reranker,
+        top_n: Optional[int] = None,
+) -> List[dict[str, Any]]:
+    device = next(reranker.parameters()).device
+    scores = []
+    minibatch_size = 4
+    num_batches = math.ceil(len(documents) / minibatch_size)
+    for batch_idx in range(num_batches):
+        batch_start = batch_idx * minibatch_size
+        batch_end = min(len(documents), batch_start + minibatch_size)
+        pairs = [[query, cur_doc] for cur_doc in documents[batch_start:batch_end]]
+        with torch.no_grad():
+            inputs = tokenizer(pairs, padding=True, return_tensors='pt').to(device)
+            scores += reranker(**inputs, return_dict=True).logits.view(-1, ).float().cpu().numpy().tolist()
+            del inputs
+        del pairs
+    reranking_result = [{'index': doc_idx, 'relevance_score': float(scores[doc_idx])} for doc_idx in
+                        range(len(documents))]
+    if top_n is not None:
+        if top_n < len(reranking_result):
+            sorted_reranking_result = sorted(reranking_result, key=lambda it: -it['relevance_score'])
+            reranking_result = sorted(sorted_reranking_result[0:top_n], key=lambda it: it['index'])
+            del sorted_reranking_result
+    del scores
+    return reranking_result
+
+
 async def initialize_rag() -> LightRAG:
     """
     Инициализирует объект LightRAG.
@@ -315,21 +375,31 @@ async def initialize_rag() -> LightRAG:
         LightRAG: Инициализированный объект LightRAG.
     """
     try:
-        logger.info("Initializing RAG system")
-        logger.info("Loading tokenizer and embedder model...")
+        logger.info("Initializing RAG system...")
+        logger.info(f"Loading tokenizer and embedder model: {LOCAL_EMBEDDER_PATH}...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_EMBEDDER_NAME, local_files_only=True
+            LOCAL_EMBEDDER_PATH,
         )
-        ENCODER: AutoTokenizer = emb_tokenizer
         emb_model: AutoModel = AutoModel.from_pretrained(
-            LOCAL_EMBEDDER_NAME,
+            LOCAL_EMBEDDER_PATH,
             trust_remote_code=True,
             # device_map='cuda:0'
             device_map='cpu',
-            local_files_only=True
         )
         emb_model.eval()
-        logger.info("Model loaded successfully")
+        logger.info(f"Model {LOCAL_EMBEDDER_PATH} loaded successfully")
+
+        logger.info(f"Loading tokenizer and reranker model: {LOCAL_RERANKER_PATH}...")
+        reranker_tokenizer = AutoTokenizer.from_pretrained(
+            LOCAL_RERANKER_PATH
+        )
+        reranker_model = AutoModelForSequenceClassification.from_pretrained(
+            LOCAL_RERANKER_PATH,
+            trust_remote_code=True,
+            device_map='cpu',
+        )
+        reranker_model.eval()
+        logger.info(f"Reranker {LOCAL_RERANKER_PATH} loaded successfully")
 
         logger.info("Initializing shared data and pipeline status...")
         initialize_share_data()
@@ -338,6 +408,11 @@ async def initialize_rag() -> LightRAG:
         logger.info("Creating LightRAG instance...")
         rag: LightRAG = LightRAG(
             working_dir=WORKING_DIR,
+            kv_storage='JsonKVStorage',
+            vector_db_storage_cls_kwargs={
+                'cosine_better_than_threshold': 0.15
+            },
+            chunk_token_size=2048,
             llm_model_func=llm_model_func,
             cosine_better_than_threshold=0.05,
             embedding_func=EmbeddingFunc(
@@ -349,25 +424,26 @@ async def initialize_rag() -> LightRAG:
                     embed_model=emb_model
                 )
             ),
+            rerank_model_func=partial(gte_hf_rerank, tokenizer=reranker_tokenizer, reranker=reranker_model),
             addon_params={'language': 'Russian'}
         )
         logger.info("Initializing RAG storages...")
         await rag.initialize_storages()
         logger.info("RAG system initialized successfully")
         token_cls = AutoModelForTokenClassification.from_pretrained(
-            LOCAL_EMBEDDER_NAME, trust_remote_code=True, device_map='cpu', local_files_only=True
+            LOCAL_EMBEDDER_PATH, trust_remote_code=True, device_map='cpu'
         )
         token_cls.eval()
-        embedder = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
-        
+        embedder: GTEEmbedding = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
+
         chunk_db, bm25 = await build_chunks_db_and_bm25(WORKING_DIR)
-        logger2 = logging.getLogger("links")
+        logger2: Logger = logging.getLogger("links")
         logger2.debug("RAG init: chunks=%d", len(chunk_db))
         try:
             logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
         except Exception:
             pass
-        
+
         return rag, embedder, bm25, chunk_db
     except Exception as e:
         logger.error(f"Error initializing RAG: {str(e)}", exc_info=True)
@@ -376,17 +452,17 @@ async def initialize_rag() -> LightRAG:
 
 # ---------- Date string generation ----------
 async def get_current_period():
-    today = datetime.now(pytz.timezone("Asia/Novosibirsk"))
-    day = today.day
-    month = today.month
-    year = today.year
-    
-    month_names = {
+    today: datetime = datetime.now(pytz.timezone("Asia/Novosibirsk"))
+    day: int = today.day
+    month: int = today.month
+    year: int = today.year
+
+    month_names: dict[int, str] = {
         1: "января", 2: "февраля", 3: "марта", 4: "апреля",
         5: "мая", 6: "июня", 7: "июля", 8: "августа",
         9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
     }
-    
+
     # Format day with proper suffix for Russian
     if 11 <= day <= 19:
         day_str = f"{day}ое"
@@ -402,8 +478,9 @@ async def get_current_period():
             day_str = f"{day}ое"
         else:
             day_str = f"{day}ое"
-    
+
     return f"{day_str} {month_names[month]} {year} года"
+
 
 # ------------ Hybrid embedder and normalization ------------
 class GTEEmbedding(torch.nn.Module):
@@ -416,8 +493,8 @@ class GTEEmbedding(torch.nn.Module):
 
     def _process_token_weights(self, token_weights: np.ndarray, input_ids: list):
         result = defaultdict(int)
-        unused = {self.tokenizer.cls_token_id, self.tokenizer.eos_token_id,
-                  self.tokenizer.pad_token_id, self.tokenizer.unk_token_id}
+        unused: set[Any] = {self.tokenizer.cls_token_id, self.tokenizer.eos_token_id,
+                            self.tokenizer.pad_token_id, self.tokenizer.unk_token_id}
         for w, idx in zip(token_weights, input_ids):
             if idx not in unused and w > 0:
                 token = self.tokenizer.decode([int(idx)])
@@ -452,7 +529,7 @@ class GTEEmbedding(torch.nn.Module):
         return res
 
     def compute_dense_scores(self, e1, e2):
-        return torch.sum(e1*e2, dim=-1).cpu().detach().numpy()
+        return torch.sum(e1 * e2, dim=-1).cpu().detach().numpy()
 
     def _sparse_dot(self, a, b):
         s = 0.0
@@ -467,7 +544,8 @@ class GTEEmbedding(torch.nn.Module):
     @torch.no_grad()
     def compute_scores(self, pairs, dimension=None, max_length=4096,
                        dense_weight=1.0, sparse_weight=0.1):
-        t1 = [p[0] for p in pairs]; t2 = [p[1] for p in pairs]
+        t1 = [p[0] for p in pairs];
+        t2 = [p[1] for p in pairs]
         e1 = self.encode(t1, dimension, max_length)
         e2 = self.encode(t2, dimension, max_length)
         ds = self.compute_dense_scores(e1["dense_embeddings"], e2["dense_embeddings"])
@@ -476,6 +554,8 @@ class GTEEmbedding(torch.nn.Module):
 
 
 _snow = SnowballStemmer(language='russian')
+
+
 async def _tokenize_and_normalize(text: str) -> str:
     words = []
     for w in wordpunct_tokenize(text):
@@ -484,6 +564,7 @@ async def _tokenize_and_normalize(text: str) -> str:
             if stem:
                 words.append(stem)
     return ' '.join(words)
+
 
 async def build_chunks_db_and_bm25(working_dir: str):
     chunks_path = Path(working_dir) / "kv_store_text_chunks.json"
@@ -494,4 +575,3 @@ async def build_chunks_db_and_bm25(working_dir: str):
     norm_texts = [await _tokenize_and_normalize(c[0]) for c in chunk_db]
     bm25 = BM25Okapi(norm_texts)
     return chunk_db, bm25
-
