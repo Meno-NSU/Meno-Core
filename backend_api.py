@@ -46,6 +46,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 try:
     collector = LogCollector()
 except:
@@ -255,7 +256,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     try:
         collector.create_message(session_id=session_id)
     except:
-        pass    
+        pass
 
     formatted_system_prompt, query, history = await _build_prompt_and_history(req.messages)
 
@@ -274,17 +275,13 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     except Exception:
         resolved_query = expanded_query
 
-
     try:
         collector.add_expanded_question(session_id=session_id, text=expanded_query)
         collector.add_resolved_question(session_id=session_id, text=resolved_query)
     except:
-        pass
-
-    try:
-        collector.update_time(session_id=session_id)
-    except:
         pass    
+
+    collector.update_time(session_id=session_id)
 
     async def run_lightrag():
         return await rag_instance.aquery(
@@ -314,7 +311,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                 collector.add_model_answer(session_id=session_id, text=content)
                 collector.print_dto(session_id=session_id)
             except:
-                pass
+                pass    
         except Exception as e:
             logger.exception("chat.completions non-stream error")
             return JSONResponse(
