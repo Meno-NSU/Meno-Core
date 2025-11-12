@@ -195,6 +195,7 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kw
 
 
 async def generate_with_llm(prompt: str, system_prompt: str = None, history_messages: list = [], **kwargs):
+    kwargs.pop('enable_cot', None)
     generated_result = await openai_complete_if_cache(
         model=settings.llm_model_name,
         prompt=prompt,
@@ -206,7 +207,6 @@ async def generate_with_llm(prompt: str, system_prompt: str = None, history_mess
         enable_cot=False,
         **kwargs
     )
-    kwargs.pop('enable_cot', None)
     thinking_end_position = generated_result.find(THINK_END_TOKEN)
     if thinking_end_position >= 0:
         generated_result = generated_result[(thinking_end_position + len(THINK_END_TOKEN)):]
