@@ -203,6 +203,7 @@ async def generate_with_llm(prompt: str, system_prompt: str = None, history_mess
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
         temperature=TEMPERATURE,
+        enable_cot=False,
         **kwargs
     )
     thinking_end_position = generated_result.find(THINK_END_TOKEN)
