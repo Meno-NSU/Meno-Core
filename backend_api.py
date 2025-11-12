@@ -46,7 +46,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-collector = LogCollector()
+try:
+    collector = LogCollector()
+except:
+    pass    
 
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
@@ -249,11 +252,17 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     # hardcoded
     session_id = 'id'
 
-    collector.create_message(session_id=session_id)
+    try:
+        collector.create_message(session_id=session_id)
+    except:
+        pass    
 
     formatted_system_prompt, query, history = await _build_prompt_and_history(req.messages)
 
-    collector.add_question(session_id=session_id, text=query)
+    try:
+        collector.add_question(session_id=session_id, text=query)
+    except:
+        pass    
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
@@ -265,10 +274,17 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     except Exception:
         resolved_query = expanded_query
 
-    collector.add_expanded_question(session_id=session_id, text=expanded_query)
-    collector.add_resolved_question(session_id=session_id, text=resolved_query)
 
-    collector.update_time(session_id=session_id)
+    try:
+        collector.add_expanded_question(session_id=session_id, text=expanded_query)
+        collector.add_resolved_question(session_id=session_id, text=resolved_query)
+    except:
+        pass
+
+    try:
+        collector.update_time(session_id=session_id)
+    except:
+        pass    
 
     async def run_lightrag():
         return await rag_instance.aquery(
@@ -294,8 +310,11 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                         chunks.append(str(part))
                 result = "".join(chunks)
             content = str(result)
-            collector.add_model_answer(session_id=session_id, text=content)
-            collector.print_dto(session_id=session_id)
+            try:
+                collector.add_model_answer(session_id=session_id, text=content)
+                collector.print_dto(session_id=session_id)
+            except:
+                pass
         except Exception as e:
             logger.exception("chat.completions non-stream error")
             return JSONResponse(

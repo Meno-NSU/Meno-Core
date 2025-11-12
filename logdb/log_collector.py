@@ -20,7 +20,6 @@ class LogCollector:
 
         self._test_counter = 0
 
-
     def _add_to_db(self, session_id: str, dto: BackEndDTO) -> None:
         conversation = Conversation(user_id=session_id, start_time=datetime.utcnow(), end_time=datetime.utcnow())
 
@@ -32,8 +31,6 @@ class LogCollector:
 
         self._session.add(conversation)  
         self._session.commit()  
-
-    
 
     def create_message(self, session_id: str):
         delta = timedelta(seconds=30)
