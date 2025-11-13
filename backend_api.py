@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import time
 import uuid
@@ -46,11 +47,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 try:
     collector = LogCollector()
 except:
-    pass    
+    pass
 
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
@@ -263,7 +263,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     try:
         collector.add_question(session_id=session_id, text=query)
     except:
-        pass    
+        pass
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
@@ -279,7 +279,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
         collector.add_expanded_question(session_id=session_id, text=expanded_query)
         collector.add_resolved_question(session_id=session_id, text=resolved_query)
     except:
-        pass    
+        pass
 
     collector.update_time(session_id=session_id)
 
@@ -457,21 +457,19 @@ async def link_from_text(req: LinkOnlyRequest):
     return LinkOnlyResponse(url="https://nsu.ru/")
 
 
-@app.post("/v1/image_from_text")
-async def image_from_text(req: ImageOnlyRequest):
-    """
-    Временная заглушка: игнорируем текст запроса и возвращаем байты локального изображения.
-    """
-    path = Path("resources/image.jpg")
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+async def _build_image_response(path: Path):
+    """Читает картинку и строит StreamingResponse."""
     if not path.exists() or not path.is_file():
-        logger.error(f"Stub image not found: {path.resolve()}")
-        return JSONResponse(status_code=500, content={"error": "stub_image_not_found", "path": str(path)})
+        raise FileNotFoundError(f"Image not found: {path}")
 
     try:
         data: bytes = await asyncio.to_thread(path.read_bytes)
     except Exception as e:
-        logger.exception("Failed to read stub image")
-        return JSONResponse(status_code=500, content={"error": "read_failed", "message": str(e)})
+        logger.exception(f"Failed to read image: {path}")
+        raise e
 
     ctype, _ = mimetypes.guess_type(str(path))
     if not ctype:
@@ -483,6 +481,62 @@ async def image_from_text(req: ImageOnlyRequest):
         media_type=ctype,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
+
+
+@app.post("/v1/image_from_text")
+async def image_from_text(req: ImageOnlyRequest):
+    """
+    Временная заглушка: игнорируем текст запроса и возвращаем байты локального изображения.
+    """
+    images_dir = Path("resources/images")
+    stub_path = images_dir / "1.jpg"
+
+    random_image_path: Path | None = None
+
+    try:
+        if images_dir.exists() and images_dir.is_dir():
+            image_files = [
+                p for p in images_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
+            ]
+            if image_files:
+                random_image_path = random.choice(image_files)
+            else:
+                logger.warning(f"No image files found in {images_dir.resolve()}")
+        else:
+            logger.warning(f"Images directory not found or is not a dir: {images_dir.resolve()}")
+    except Exception:
+        logger.exception("Failed to enumerate images directory, will fallback to stub")
+
+    if random_image_path is not None:
+        try:
+            return await _build_image_response(random_image_path)
+        except Exception:
+            logger.exception(
+                f"Failed to send random image {random_image_path}, falling back to stub 1.jpg"
+            )
+
+    try:
+        return await _build_image_response(stub_path)
+    except FileNotFoundError:
+        logger.error(f"Stub image not found: {stub_path.resolve()}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "stub_image_not_found",
+                "path": str(stub_path),
+            },
+        )
+    except Exception as e:
+        logger.exception("Failed to read stub image")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "read_failed",
+                "message": str(e),
+                "path": str(stub_path),
+            },
+        )
 
 
 @app.get("/v1/models")
