@@ -29,7 +29,7 @@ from lightrag.utils import setup_logger
 from link_correcter import LinkCorrecter
 from link_searcher import LinkSearcher
 from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, get_current_period
+    explain_abbreviations, get_current_period, is_likely_hallucination
 
 from logdb.log_collector import LogCollector
 
@@ -307,11 +307,36 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                         chunks.append(str(part))
                 result = "".join(chunks)
             content = str(result)
+            prompt_for_first_answer = await rag_instance.aquery(
+                resolved_query,
+                param=QueryParam(
+                    mode=QUERY_MODE,
+                    conversation_history=history,
+                    enable_rerank=True,
+                    only_need_prompt=True
+                ),
+            )
+            try:
+                is_hallucination, relevance_score = await is_likely_hallucination(
+                    original_prompt=prompt_for_first_answer,
+                    llm_answer=content,
+                )
+                logger.info(
+                    "Hallucination result: is_hallucination=%s, score=%.4f",
+                    is_hallucination,
+                    relevance_score,
+                )
+                content = "Спасибо за сложный вопрос! Кажется, я не очень уверен в ответе, поэтому заранее приношу извинения за неточности и возможные ошибки!\n\n" + content
+            except Exception:
+                logger.exception("Hallucination scoring failed")
+                pass
+
             try:
                 collector.add_model_answer(session_id=session_id, text=content)
                 collector.print_dto(session_id=session_id)
             except:
-                pass    
+                pass
+
         except Exception as e:
             logger.exception("chat.completions non-stream error")
             return JSONResponse(

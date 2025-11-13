@@ -49,6 +49,7 @@ LOCAL_EMBEDDER_MAX_TOKENS: int = 2048
 LOCAL_EMBEDDER_PATH: Path = settings.local_embedder_path
 LOCAL_RERANKER_MAX_TOKENS: int = 4096
 LOCAL_RERANKER_PATH: Path = settings.local_reranker_path
+DEFAULT_HALLUCINATION_THRESHOLD: float = 0.4
 print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(LOCAL_EMBEDDER_PATH)}')
 
 THINK_END_TOKEN = '</think>'
@@ -390,6 +391,99 @@ async def gte_hf_rerank(
     del scores
     return reranking_result
 
+async def score_answer_relevance_to_prompt(
+    prompt: str,
+    answer: str,
+    reranker_tokenizer,
+    reranker_model,
+    normalize: bool = True,
+) -> float:
+    """
+    Оценивает, насколько ответ модели (answer) относится к исходному промпту (prompt)
+    с помощью локального реранкера.
+
+    :param prompt: исходный пользовательский запрос / промпт
+    :param answer: ответ модели, который хотим проверить на релевантность
+    :param reranker_tokenizer: токенизатор для LOCAL_RERANKER_PATH
+    :param reranker_model: AutoModelForSequenceClassification для LOCAL_RERANKER_PATH
+    :param normalize: если True — возвращает значение в [0,1] через сигмоиду,
+                      если False — сырое значение логита из реранкера
+    :return: скор релевантности (float). Чем ближе к 1, тем ответ ближе к вопросу.
+             Можно использовать пороги типа:
+             - > 0.7 — ответ хорошо соответствует запросу
+             - 0.4–0.7 — погранично
+             - < 0.4 — высокая вероятность галлюцинаций/ухода от темы
+    """
+    try:
+        rerank_result = await gte_hf_rerank(
+            query=prompt,
+            documents=[answer],
+            tokenizer=reranker_tokenizer,
+            reranker=reranker_model,
+            top_n=1,
+        )
+        raw_score: float = float(rerank_result[0]["relevance_score"])
+        logger.debug(f"Raw reranker score for answer vs prompt: {raw_score}")
+
+        if not normalize:
+            return raw_score
+
+        prob = 1.0 / (1.0 + math.exp(-raw_score))
+        logger.debug(f"Normalized reranker score (sigmoid): {prob}")
+        return prob
+
+    except Exception as e:
+        logger.error(f"Error in score_answer_relevance_to_prompt: {str(e)}", exc_info=True)
+        return 1.0
+
+async def is_likely_hallucination(
+    original_prompt: str,
+    llm_answer: str,
+    threshold: float = DEFAULT_HALLUCINATION_THRESHOLD,
+) -> tuple[bool, float]:
+    """
+    Проверяет, насколько ответ модели связан с исходным промптом, и
+    возвращает флаг "похоже на галлюцинацию" + сам скор.
+
+    :param original_prompt: исходный запрос пользователя (желательно уже после
+                            resolve_anaphora / explain_abbreviations)
+    :param llm_answer: финальный текст ответа модели
+    :param threshold: порог для флага галлюцинации.
+                      По умолчанию 0.4 (score < threshold -> галлюцинация).
+    :return: (is_hallucination, relevance_score)
+             - is_hallucination: True, если ответ слабо связан с вопросом
+             - relevance_score: нормализованный скор в [0,1]
+    """
+    if not original_prompt or not llm_answer:
+        logger.warning("is_likely_hallucination: empty prompt or answer")
+        return True, 0.0
+
+    if _reranker_tokenizer is None or _reranker_model is None:
+        logger.warning(
+            "is_likely_hallucination: reranker is not initialized; "
+            "returning (False, 0.0)"
+        )
+        return False, 0.0
+
+    try:
+        score = await score_answer_relevance_to_prompt(
+            prompt=original_prompt,
+            answer=llm_answer,
+            reranker_tokenizer=_reranker_tokenizer,
+            reranker_model=_reranker_model,
+            normalize=True,
+        )
+    except Exception as e:
+        logger.error(f"Error in is_likely_hallucination: {str(e)}", exc_info=True)
+        # В случае ошибки лучше не обвинять модель в галлюцинации, а просто вернуть "не знаем"
+        return False, 0.0
+
+    is_h = score < threshold
+    logger.info(
+        f"Hallucination check: score={score:.4f}, "
+        f"threshold={threshold:.4f}, hallucination={is_h}"
+    )
+    return is_h, score
 
 async def initialize_rag() -> LightRAG:
     """
@@ -426,6 +520,10 @@ async def initialize_rag() -> LightRAG:
         )
         reranker_model.eval()
         logger.info(f"Reranker {LOCAL_RERANKER_PATH} loaded successfully")
+
+        global _reranker_tokenizer, _reranker_model
+        _reranker_tokenizer = reranker_tokenizer
+        _reranker_model = reranker_model
 
         logger.info("Initializing shared data and pipeline status...")
         initialize_share_data()
