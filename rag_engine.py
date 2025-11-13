@@ -418,8 +418,8 @@ async def score_answer_relevance_to_prompt(
     """
     try:
         rerank_result = await gte_hf_rerank(
-            query=prompt,
-            documents=[answer],
+            query=answer,
+            documents=[prompt],
             tokenizer=reranker_tokenizer,
             reranker=reranker_model,
             top_n=1,
