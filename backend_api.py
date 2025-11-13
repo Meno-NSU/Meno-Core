@@ -326,7 +326,8 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                     is_hallucination,
                     relevance_score,
                 )
-                content = "Спасибо за сложный вопрос! Кажется, я не очень уверен в ответе, поэтому заранее приношу извинения за неточности и возможные ошибки!\n\n" + content
+                if is_hallucination:
+                    content = "Спасибо за сложный вопрос! Кажется, я не очень уверен в ответе, поэтому заранее приношу извинения за неточности и возможные ошибки!\n\n" + content
             except Exception:
                 logger.exception("Hallucination scoring failed")
                 pass

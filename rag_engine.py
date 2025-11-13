@@ -49,7 +49,7 @@ LOCAL_EMBEDDER_MAX_TOKENS: int = 2048
 LOCAL_EMBEDDER_PATH: Path = settings.local_embedder_path
 LOCAL_RERANKER_MAX_TOKENS: int = 4096
 LOCAL_RERANKER_PATH: Path = settings.local_reranker_path
-DEFAULT_HALLUCINATION_THRESHOLD: float = 0.4
+DEFAULT_HALLUCINATION_THRESHOLD: float = 0.3
 print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(LOCAL_EMBEDDER_PATH)}')
 
 THINK_END_TOKEN = '</think>'
