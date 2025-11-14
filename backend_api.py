@@ -316,21 +316,21 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                     only_need_prompt=True
                 ),
             )
-            try:
-                is_hallucination, relevance_score = await is_likely_hallucination(
-                    original_prompt=prompt_for_first_answer,
-                    llm_answer=content,
-                )
-                logger.info(
-                    "Hallucination result: is_hallucination=%s, score=%.4f",
-                    is_hallucination,
-                    relevance_score,
-                )
-                if is_hallucination:
-                    content = "Спасибо за сложный вопрос! Кажется, я не очень уверен в ответе, поэтому заранее приношу извинения за неточности и возможные ошибки!\n\n" + content
-            except Exception:
-                logger.exception("Hallucination scoring failed")
-                pass
+            # try:
+            #     is_hallucination, relevance_score = await is_likely_hallucination(
+            #         original_prompt=prompt_for_first_answer,
+            #         llm_answer=content,
+            #     )
+            #     logger.info(
+            #         "Hallucination result: is_hallucination=%s, score=%.4f",
+            #         is_hallucination,
+            #         relevance_score,
+            #     )
+            #     if is_hallucination:
+            #         content = "Спасибо за сложный вопрос! Кажется, я не очень уверен в ответе, поэтому заранее приношу извинения за неточности и возможные ошибки!\n\n" + content
+            # except Exception:
+            #     logger.exception("Hallucination scoring failed")
+            #     pass
 
             try:
                 collector.add_model_answer(session_id=session_id, text=content)
