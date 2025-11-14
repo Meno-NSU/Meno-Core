@@ -307,15 +307,15 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                         chunks.append(str(part))
                 result = "".join(chunks)
             content = str(result)
-            prompt_for_first_answer = await rag_instance.aquery(
-                resolved_query,
-                param=QueryParam(
-                    mode=QUERY_MODE,
-                    conversation_history=history,
-                    enable_rerank=True,
-                    only_need_prompt=True
-                ),
-            )
+            # prompt_for_first_answer = await rag_instance.aquery(
+            #     resolved_query,
+            #     param=QueryParam(
+            #         mode=QUERY_MODE,
+            #         conversation_history=history,
+            #         enable_rerank=True,
+            #         only_need_prompt=True
+            #     ),
+            # )
             # try:
             #     is_hallucination, relevance_score = await is_likely_hallucination(
             #         original_prompt=prompt_for_first_answer,
