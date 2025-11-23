@@ -6,21 +6,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    openai_api_key: Optional[str] = Field(
-        default=None,
+    openai_api_key: str = Field(
+        default="",
         validation_alias=AliasChoices("OPENAI_API_KEY", "NSU_OPENAI_API_KEY"),
     )
-    openai_base_url: Optional[str] = Field(
+    openai_base_url: str = Field(
         default=None,
         validation_alias="OPENAI_BASE_URL",
     )
-    llm_model_name: Optional[str] = Field(
+    llm_model_name: str = Field(
         default=None,
         validation_alias="LLM_MODEL_NAME",
     )
 
     # Embedding
-    local_embedder_path: Optional[Path] = Field(
+    local_embedder_path: Path = Field(
         default=None,
         validation_alias="LOCAL_EMBEDDER_PATH",
     )
