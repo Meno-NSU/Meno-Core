@@ -24,15 +24,16 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from config import settings
 from lightrag import QueryParam, LightRAG
 from lightrag.utils import setup_logger
-from link_correcter import LinkCorrecter
-from link_searcher import LinkSearcher
-from rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, get_current_period, is_likely_hallucination
+from meno_core.core.link_correcter import LinkCorrecter
+from meno_core.core.link_searcher import LinkSearcher
+from meno_core.core.rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
+    explain_abbreviations, get_current_period
 
-from logdb.log_collector import LogCollector
+from meno_core.infrastructure.logdb.log_collector import LogCollector
+
+from meno_core.config.settings import settings
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
@@ -141,7 +142,13 @@ async def lifespan(app: FastAPI):
     logger.info("⏰ Cache-clearing scheduler stopped")
 
 
-app = FastAPI(lifespan=lifespan)
+def create_app() -> FastAPI:
+    app = FastAPI(lifespan=lifespan)
+    return app
+
+
+app = create_app()
+
 rag_instance: LightRAG
 abbreviations = {}
 
@@ -488,7 +495,7 @@ async def image_from_text(req: ImageOnlyRequest):
     """
     Временная заглушка: игнорируем текст запроса и возвращаем байты локального изображения.
     """
-    images_dir = Path("resources/images")
+    images_dir = Path("../../../resources/images")
     stub_path = images_dir / "1.jpg"
 
     random_image_path: Path | None = None

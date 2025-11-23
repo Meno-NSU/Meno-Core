@@ -1,4 +1,4 @@
-from logdb.message import Message
+from meno_core.infrastructure.logdb.message import Message
 from datetime import datetime
 
 class BackEndDTO:

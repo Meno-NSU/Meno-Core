@@ -130,7 +130,7 @@ if __name__ == "__main__":
 
 Не забудьте проверить актуальность информации, так как НГУ регулярно обновляет свои образовательные программы и может внедрять новые специализации.
     """
-    corr = LinkCorrecter("resources/validated_urls.json", dist_threshold=0.85)
+    corr = LinkCorrecter("../../../resources/validated_urls.json", dist_threshold=0.85)
     print("--- Processing Document ---")
     processed_text = corr.replace_markdown_links(
         document_text,
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     print(processed_text)
     
     # --- Example with a lower threshold ---
-    corr = LinkCorrecter("resources/validated_urls.json", dist_threshold=0.1)
+    corr = LinkCorrecter("../../../resources/validated_urls.json", dist_threshold=0.1)
     print("\n\n--- Processing with lower threshold (0.7) ---")
     processed_text_low_thresh = corr.replace_markdown_links(
         document_text,

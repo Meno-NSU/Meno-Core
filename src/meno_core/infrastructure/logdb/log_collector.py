@@ -1,11 +1,11 @@
-from logdb.backend_dto import BackEndDTO
-from datetime import datetime, timedelta
+from meno_core.infrastructure.logdb.backend_dto import BackEndDTO
+from datetime import timedelta
 
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy import String, create_engine
 from datetime import datetime
 from sqlalchemy import DateTime, Text
-from logdb.db_models.db_models import Base, Conversation, Turn
+from meno_core.infrastructure.logdb.db_models.db_models import Base, Conversation, Turn
 
 class LogCollector:
     def __init__(self):

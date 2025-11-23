@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # LINKS
     enable_links_addition: bool = True
     enable_links_correction: bool = True
-    urls_path: Path = Path("resources/validated_urls.json")
+    urls_path: Path = Path("../../../resources/validated_urls.json")
     max_links: int = 5
     top_k: int = 15
     dist_threshold: float = 0.70

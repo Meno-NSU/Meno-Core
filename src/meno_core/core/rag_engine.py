@@ -1,9 +1,8 @@
 import math
-import os
 from functools import partial
 from logging import Logger
 from re import Match, Pattern
-from typing import List, Any, Optional
+from typing import Any, Optional
 
 import json
 import logging
@@ -32,7 +31,7 @@ from torch import Tensor
 from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification
 from transformers import AutoTokenizer, AutoModel
 
-from config import settings
+from meno_core.config import settings
 from lightrag import LightRAG
 
 TEMPERATURE: float = 0.3
