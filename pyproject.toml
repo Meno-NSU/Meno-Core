@@ -9,7 +9,7 @@ dependencies = [
     "apscheduler>=3.11.1",
     "fastapi>=0.121.3",
     "future>=1.0.0",
-#    "graspologic>=3.4.4",
+    #    "graspologic>=3.4.4",
     "lightrag-hku>=1.4.9.8",
     "nano-vectordb>=0.0.4.3",
     "nltk>=3.9.2",
@@ -47,4 +47,5 @@ dev = [
     "ruff",
     "mypy",
     "build",
+    "pre-commit",
 ]
