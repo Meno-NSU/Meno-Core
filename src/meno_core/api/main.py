@@ -120,7 +120,7 @@ async def lifespan(_: FastAPI):
         )
     if settings.enable_links_correction:
         ref_corrector = LinkCorrecter(settings.urls_path, settings.correct_dist_threshold)
-    scheduler = AsyncIOScheduler(timezone="Asia/Novosибирск")  # timezone
+    scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     if scheduler is not None:
         scheduler.add_job(
