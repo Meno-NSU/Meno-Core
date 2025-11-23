@@ -10,17 +10,17 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("OPENAI_API_KEY", "NSU_OPENAI_API_KEY"),
     )
-    openai_base_url: str = Field(
+    openai_base_url: Optional[str] = Field(
         default=None,
         validation_alias="OPENAI_BASE_URL",
     )
-    llm_model_name: str = Field(
+    llm_model_name: Optional[str] = Field(
         default=None,
         validation_alias="LLM_MODEL_NAME",
     )
 
     # Embedding
-    local_embedder_path: Path = Field(
+    local_embedder_path: Optional[Path] = Field(
         default=None,
         validation_alias="LOCAL_EMBEDDER_PATH",
     )
