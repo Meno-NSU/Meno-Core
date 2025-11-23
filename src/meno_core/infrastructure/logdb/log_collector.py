@@ -44,9 +44,10 @@ class LogCollector:
             start_time = dto._session_start_time  # не круто
             end_time = dto._session_end_time
 
-            if abs(start_time - end_time) >= delta:
-                self._add_to_db(session_id=session_id, dto=dto)
-                self._unreleased_dtos.pop(session_id)
+            if start_time is not None and end_time is not None:
+                if abs(start_time - end_time) >= delta:
+                    self._add_to_db(session_id=session_id, dto=dto)
+                    self._unreleased_dtos.pop(session_id)
 
         if session_id not in self._unreleased_dtos.keys():
             self._unreleased_dtos[session_id] = BackEndDTO(session_id=session_id, start_time=datetime.utcnow())

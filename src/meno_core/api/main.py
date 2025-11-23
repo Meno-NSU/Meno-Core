@@ -69,7 +69,8 @@ def setup_links_logger(path: str, level: str = "DEBUG",
     # чтобы не дублировать записи при hot-reload
     if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == os.path.abspath(path)
                for h in links_logger.handlers):
-        fh: RotatingFileHandler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        fh: RotatingFileHandler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count,
+                                                      encoding="utf-8")
         fmt: Formatter = logging.Formatter(
             fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"
@@ -119,15 +120,16 @@ async def lifespan(_: FastAPI):
         )
     if settings.enable_links_correction:
         ref_corrector = LinkCorrecter(settings.urls_path, settings.correct_dist_threshold)
-    scheduler: AsyncIOScheduler = AsyncIOScheduler(timezone="Asia/Novosибирск")  # timezone
+    scheduler = AsyncIOScheduler(timezone="Asia/Novosибирск")  # timezone
     # Clear cache daily at 00:00
-    scheduler.add_job(
-        clear_rag_cache,
-        trigger=CronTrigger(hour=0, minute=0),
-        name="clear_rag_cache_daily"
-    )
-    scheduler.start()
-    logger.info("⏰ Cache-clearing scheduler started")
+    if scheduler is not None:
+        scheduler.add_job(
+            clear_rag_cache,
+            trigger=CronTrigger(hour=0, minute=0),
+            name="clear_rag_cache_daily"
+        )
+        scheduler.start()
+        logger.info("⏰ Cache-clearing scheduler started")
     try:
         # ensure path is str for mypy (settings.abbreviations_file may be Path)
         abbr_path: str = str(settings.abbreviations_file)
@@ -140,7 +142,8 @@ async def lifespan(_: FastAPI):
     yield  # <-- здесь FastAPI продолжает работу
     # Здесь можно вызвать await rag_instance.cleanup(), если нужно
     # Shutdown scheduler on app exit
-    scheduler.shutdown()
+    if scheduler is not None:
+        scheduler.shutdown()
     logger.info("⏰ Cache-clearing scheduler stopped")
 
 

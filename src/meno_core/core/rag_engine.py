@@ -27,7 +27,7 @@ from torch import Tensor
 from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification
 from transformers import AutoTokenizer, AutoModel
 
-from meno_core.config import settings
+from meno_core.config.settings import settings
 
 TEMPERATURE: float = 0.3
 QUERY_MAX_TOKENS: int = 4000
@@ -40,7 +40,7 @@ URLS_PATH: str = str(settings.urls_path)
 print(f'os.path.isfile({URLS_PATH}) = {os.path.isfile(URLS_PATH)}')
 LOCAL_EMBEDDER_DIMENSION: int = 768
 LOCAL_EMBEDDER_MAX_TOKENS: int = 2048
-LOCAL_EMBEDDER_PATH: Path = settings.local_embedder_path
+LOCAL_EMBEDDER_PATH: Path = settings.local_embeddings_path
 LOCAL_RERANKER_MAX_TOKENS: int = 4096
 LOCAL_RERANKER_PATH: Path = settings.local_reranker_path
 DEFAULT_HALLUCINATION_THRESHOLD: float = 0.3
@@ -349,10 +349,11 @@ async def gte_hf_embed(texts: List[str], tokenizer: Any, embed_model: Any) -> np
                 outputs.last_hidden_state[:, 0][:LOCAL_EMBEDDER_DIMENSION],
                 p=2, dim=1
             )
+        result: np.ndarray
         if embeddings.dtype == torch.bfloat16:
-            result: np.ndarray = embeddings.detach().to(torch.float32).cpu().numpy()
+            result = embeddings.detach().to(torch.float32).cpu().numpy()
         else:
-            result: np.ndarray = embeddings.detach().cpu().numpy()
+            result = embeddings.detach().cpu().numpy()
 
         logger.info(f"Embeddings for {texts} generated successfully")
         return result
@@ -618,15 +619,28 @@ class GTEEmbedding(torch.nn.Module):
         self.normalized = normalized
         self.vocab_size = self.model.config.vocab_size
 
-    def _process_token_weights(self, token_weights: np.ndarray, input_ids: list):
-        result = defaultdict(int)
-        unused: set[Any] = {self.tokenizer.cls_token_id, self.tokenizer.eos_token_id,
-                            self.tokenizer.pad_token_id, self.tokenizer.unk_token_id}
+    def _process_token_weights(
+        self,
+        token_weights: np.ndarray,
+        input_ids: list[int],
+    ) -> defaultdict[Any, float]:
+        result: defaultdict[Any, float] = defaultdict(float)
+        unused: set[Any] = {
+            t_id
+            for t_id in {
+                self.tokenizer.cls_token_id,
+                getattr(self.tokenizer, "eos_token_id", None),
+                self.tokenizer.pad_token_id,
+                self.tokenizer.unk_token_id,
+            }
+            if t_id is not None
+        }
         for w, idx in zip(token_weights, input_ids):
-            if idx not in unused and w > 0:
+            w_val = float(w)
+            if idx not in unused and w_val > 0.0:
                 token = self.tokenizer.decode([int(idx)])
-                if w > result[token]:
-                    result[token] = float(w)
+                if w_val > result[token]:
+                    result[token] = w_val
         return result
 
     @torch.no_grad()
