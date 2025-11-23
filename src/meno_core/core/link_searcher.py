@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import List, Tuple, Any
+from typing import List, Tuple
 
 import numpy as np
 from lightrag import LightRAG  # type: ignore[import-untyped]

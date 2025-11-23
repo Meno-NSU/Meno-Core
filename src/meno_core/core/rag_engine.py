@@ -8,7 +8,7 @@ from functools import partial
 from logging import Logger
 from pathlib import Path
 from re import Match, Pattern
-from typing import Any, Optional, List, Union, cast
+from typing import Any, Optional, List, Union
 
 import math
 import numpy as np

@@ -16,7 +16,7 @@ from logging import Logger, Formatter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Dict, Optional, Union
-from typing import Literal, Any, Tuple
+from typing import Literal, Tuple
 
 import pytz  # type: ignore[import-untyped]
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
