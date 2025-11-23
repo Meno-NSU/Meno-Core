@@ -29,6 +29,9 @@ from transformers import AutoTokenizer, AutoModel
 
 from meno_core.config.settings import settings
 
+_reranker_tokenizer = None
+_reranker_model = None
+
 TEMPERATURE: float = 0.3
 QUERY_MAX_TOKENS: int = 4000
 TOP_K: int = settings.top_k
@@ -173,7 +176,8 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
 
 
 # ---------- LLM wrapper ----------
-async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List[Any]] = None, **kwargs) -> str:
+async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List[Any]] = None,
+                         **kwargs) -> str:
     """
     Функция для взаимодействия с языковой моделью (LLM).
 
@@ -206,7 +210,8 @@ async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, histo
 
 
 # make system_prompt Optional and avoid mutable default for history_messages
-async def generate_with_llm(prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List[Any]] = None, **kwargs):
+async def generate_with_llm(prompt: str, system_prompt: Optional[str] = None,
+                            history_messages: Optional[List[Any]] = None, **kwargs):
     if history_messages is None:
         history_messages = []
     kwargs.pop('enable_cot', None)
@@ -535,7 +540,7 @@ async def initialize_rag() -> LightRAG:
 
         logger.info("Creating LightRAG instance...")
         rag: LightRAG = LightRAG(
-            working_dir=WORKING_DIR,
+            working_dir=str(WORKING_DIR),
             kv_storage='JsonKVStorage',
             vector_db_storage_cls_kwargs={
                 'cosine_better_than_threshold': 0.15
@@ -620,9 +625,9 @@ class GTEEmbedding(torch.nn.Module):
         self.vocab_size = self.model.config.vocab_size
 
     def _process_token_weights(
-        self,
-        token_weights: np.ndarray,
-        input_ids: list[int],
+            self,
+            token_weights: np.ndarray,
+            input_ids: list[int],
     ) -> defaultdict[Any, float]:
         result: defaultdict[Any, float] = defaultdict(float)
         unused: set[Any] = {
