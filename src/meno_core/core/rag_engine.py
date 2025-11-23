@@ -8,21 +8,21 @@ from functools import partial
 from logging import Logger
 from pathlib import Path
 from re import Match, Pattern
-from typing import Any, Optional
-from typing import List
+from typing import Any, Optional, List, Union, cast
 
 import math
 import numpy as np
-import pytz
+# third-party imports without stubs - mark them to silence mypy import-untyped
+import pytz  # type: ignore[import]
 import torch
 import torch.nn.functional as F
-from lightrag import LightRAG
-from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data
-from lightrag.llm.openai import openai_complete_if_cache
-from lightrag.utils import EmbeddingFunc
-from nltk import wordpunct_tokenize
-from nltk.stem.snowball import SnowballStemmer
-from rank_bm25 import BM25Okapi
+from lightrag import LightRAG  # type: ignore[import]
+from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data  # type: ignore[import]
+from lightrag.llm.openai import openai_complete_if_cache  # type: ignore[import]
+from lightrag.utils import EmbeddingFunc  # type: ignore[import]
+from nltk import wordpunct_tokenize  # type: ignore[import]
+from nltk.stem.snowball import SnowballStemmer  # type: ignore[import]
+from rank_bm25 import BM25Okapi  # type: ignore[import]
 from torch import Tensor
 from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification
 from transformers import AutoTokenizer, AutoModel
@@ -129,7 +129,7 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
     if not isinstance(text, str):
         text = "" if text is None else str(text)
 
-    m: Match[str] = _JSON_BLOCK_RE.search(text)
+    m: Optional[Match[str]] = _JSON_BLOCK_RE.search(text)
     if m:
         payload: str = m.group(1)
         try:
@@ -147,7 +147,7 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
         except Exception:
             logger.debug("Found ```json block``` but cannot parse; will wrap cleanly")
 
-    m2: Match[str] = _JSON_OBJECT_RE.search(text)
+    m2: Optional[Match[str]] = _JSON_OBJECT_RE.search(text)
     if m2:
         try:
             obj = json.loads(m2.group(0))
@@ -173,7 +173,7 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
 
 
 # ---------- LLM wrapper ----------
-async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs) -> str:
+async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List[Any]] = None, **kwargs) -> str:
     """
     Функция для взаимодействия с языковой моделью (LLM).
 
@@ -205,7 +205,10 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kw
         return "Извините, сейчас не удалось получить ответ от модели."
 
 
-async def generate_with_llm(prompt: str, system_prompt: str = None, history_messages: list = [], **kwargs):
+# make system_prompt Optional and avoid mutable default for history_messages
+async def generate_with_llm(prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List[Any]] = None, **kwargs):
+    if history_messages is None:
+        history_messages = []
     kwargs.pop('enable_cot', None)
     extra_body = {
         "chat_template_kwargs": {
@@ -332,7 +335,8 @@ async def resolve_anaphora(question: str, history: list) -> str:
 
 
 # ---------- Embedding function ----------
-async def gte_hf_embed(texts: List[str], tokenizer, embed_model: AutoModel) -> np.ndarray:
+# treat AutoModel and tokenizers as Any in signatures to avoid missing-stub attribute errors
+async def gte_hf_embed(texts: List[str], tokenizer: Any, embed_model: Any) -> np.ndarray:
     try:
         device = next(embed_model.parameters()).device
         batch_dict = tokenizer(
@@ -346,9 +350,9 @@ async def gte_hf_embed(texts: List[str], tokenizer, embed_model: AutoModel) -> n
                 p=2, dim=1
             )
         if embeddings.dtype == torch.bfloat16:
-            result = embeddings.detach().to(torch.float32).cpu().numpy()
+            result: np.ndarray = embeddings.detach().to(torch.float32).cpu().numpy()
         else:
-            result = embeddings.detach().cpu().numpy()
+            result: np.ndarray = embeddings.detach().cpu().numpy()
 
         logger.info(f"Embeddings for {texts} generated successfully")
         return result
@@ -360,8 +364,8 @@ async def gte_hf_embed(texts: List[str], tokenizer, embed_model: AutoModel) -> n
 async def gte_hf_rerank(
         query: str,
         documents: List[str],
-        tokenizer,
-        reranker,
+        tokenizer: Any,
+        reranker: Any,
         top_n: Optional[int] = None,
 ) -> List[dict[str, Any]]:
     device = next(reranker.parameters()).device
@@ -391,8 +395,8 @@ async def gte_hf_rerank(
 async def score_answer_relevance_to_prompt(
         prompt: str,
         answer: str,
-        reranker_tokenizer,
-        reranker_model,
+        reranker_tokenizer: Any,
+        reranker_model: Any,
         normalize: bool = True,
 ) -> float:
     """
@@ -499,7 +503,7 @@ async def initialize_rag() -> LightRAG:
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
             LOCAL_EMBEDDER_PATH,
         )
-        emb_model: AutoModel = AutoModel.from_pretrained(
+        emb_model = AutoModel.from_pretrained(
             LOCAL_EMBEDDER_PATH,
             trust_remote_code=True,
             # device_map='cuda:0'
@@ -679,7 +683,7 @@ class GTEEmbedding(torch.nn.Module):
 _snow = SnowballStemmer(language='russian')
 
 
-async def _tokenize_and_normalize(text: str) -> str:
+async def tokenize_and_normalize(text: str) -> str:
     words = []
     for w in wordpunct_tokenize(text):
         if w.isalnum():
@@ -689,12 +693,19 @@ async def _tokenize_and_normalize(text: str) -> str:
     return ' '.join(words)
 
 
-async def build_chunks_db_and_bm25(working_dir: str):
-    chunks_path = Path(working_dir) / "kv_store_text_chunks.json"
+async def build_chunks_db_and_bm25(working_dir: Union[str, Path]):
+    # coerce Path to str so callers can pass Path and code that expects str will work
+    working_dir_str: str
+    if isinstance(working_dir, Path):
+        working_dir_str = str(working_dir)
+    else:
+        working_dir_str = working_dir
+
+    chunks_path = Path(working_dir_str) / "kv_store_text_chunks.json"
     with chunks_path.open("r", encoding="utf-8") as fp:
         raw = json.load(fp)
     # [(content, full_doc_id)]
     chunk_db = [(raw[k]["content"], raw[k]["full_doc_id"]) for k in raw]
-    norm_texts = [await _tokenize_and_normalize(c[0]) for c in chunk_db]
+    norm_texts = [await tokenize_and_normalize(c[0]) for c in chunk_db]
     bm25 = BM25Okapi(norm_texts)
     return chunk_db, bm25

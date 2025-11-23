@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from meno_core.infrastructure.logdb.backend_dto import BackEndDTO
-from meno_core.infrastructure.logdb.db_models.db_models import Conversation, Turn
+from meno_core.infrastructure.logdb.model.db_models import Conversation, Turn
 
 
 class LogCollector:

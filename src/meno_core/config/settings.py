@@ -1,21 +1,21 @@
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     # OpenAI
-    openai_api_key: str
-    openai_base_url: str
-    llm_model_name: str
+    openai_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    llm_model_name: Optional[str] = None
 
     # Embedding
-    local_embedder_path: str
+    local_embedder_path: Optional[str] = None
 
     # RAG
-    working_dir: Path
-    abbreviations_file: Path
+    working_dir: Optional[Path] = None
+    abbreviations_file: Optional[Path] = None
     query_mode: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
 
     # LINKS
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     embedder_max_tokens: int = 4096
 
     # RERANKER
-    local_reranker_path: Path
+    local_reranker_path: Optional[Path] = None
 
     # LIGHT RAG
     temperature: float = 0.3

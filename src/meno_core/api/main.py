@@ -16,15 +16,15 @@ from logging import Logger, Formatter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Dict, Optional, Union
-from typing import Literal
+from typing import Literal, Any, Tuple
 
-import pytz
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+import pytz  # type: ignore[import-untyped]
+from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
+from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
-from lightrag import QueryParam, LightRAG
-from lightrag.utils import setup_logger
+from lightrag import QueryParam, LightRAG  # type: ignore[import-untyped]
+from lightrag.utils import setup_logger  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
 from meno_core.config.settings import settings
@@ -119,7 +119,7 @@ async def lifespan(_: FastAPI):
         )
     if settings.enable_links_correction:
         ref_corrector = LinkCorrecter(settings.urls_path, settings.correct_dist_threshold)
-    scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
+    scheduler: AsyncIOScheduler = AsyncIOScheduler(timezone="Asia/Novosибирск")  # timezone
     # Clear cache daily at 00:00
     scheduler.add_job(
         clear_rag_cache,
@@ -129,7 +129,9 @@ async def lifespan(_: FastAPI):
     scheduler.start()
     logger.info("⏰ Cache-clearing scheduler started")
     try:
-        with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
+        # ensure path is str for mypy (settings.abbreviations_file may be Path)
+        abbr_path: str = str(settings.abbreviations_file)
+        with codecs.open(abbr_path, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
             logger.info(f"📚 Successfully load {len(abbreviations)} abbreviations.")
     except Exception as load_abbreviations_error:
@@ -150,10 +152,10 @@ def create_app() -> FastAPI:
 app = create_app()
 
 rag_instance: LightRAG
-abbreviations = {}
-ref_searcher = None
-ref_corrector = None
-scheduler = None
+abbreviations: Dict[str, str] = {}
+ref_searcher: Optional[LinkSearcher] = None
+ref_corrector: Optional[LinkCorrecter] = None
+scheduler: Optional[AsyncIOScheduler] = None
 
 
 class ResetRequest(BaseModel):
@@ -193,7 +195,7 @@ class OAIChatCompletionsRequest(BaseModel):
     user: Optional[str] = None
 
 
-async def _build_prompt_and_history(messages: List[OAIMsg]) -> tuple[str, str, List[dict]]:
+async def _build_prompt_and_history(messages: List[OAIMsg]) -> Tuple[str, str, List[Dict[str, str]]]:
     """Получаем system_prompt, последнюю user-реплику (query) и последние 4 раунда истории."""
     # system prompt
     sys_msgs = [m.content for m in messages if m.role == "system"]
@@ -476,7 +478,7 @@ async def link_from_text(req: LinkOnlyRequest):
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
-async def _build_image_response(path: Path):
+async def _build_image_response(path: Path) -> StreamingResponse:
     """Читает картинку и строит StreamingResponse."""
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"Image not found: {path}")

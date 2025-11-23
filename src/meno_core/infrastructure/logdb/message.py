@@ -18,14 +18,14 @@ class Message:
     def set_model_answer(self, answer: str) -> None:
         self._model_answer = answer
 
-    def get_question(self) -> str:
+    def get_question(self) -> str | None:
         return self._question    
     
-    def get_expanded_question(self) -> str:
+    def get_expanded_question(self) -> str | None:
         return self._expanded_question
     
-    def get_coref_resolved_question(self) -> str:
+    def get_coref_resolved_question(self) -> str | None:
         return self._coref_resolved_question 
     
-    def get_answer(self) -> str:
+    def get_answer(self) -> str | None:
         return self._model_answer

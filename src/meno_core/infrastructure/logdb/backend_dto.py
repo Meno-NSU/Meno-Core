@@ -6,8 +6,8 @@ from meno_core.infrastructure.logdb.message import Message
 class BackEndDTO:
     def __init__(self, session_id: str, start_time: datetime) -> None:
         self._session_id: str | None = session_id
-        self._session_start_time: int | None = start_time
-        self._session_end_time: datetime = None
+        self._session_start_time: datetime | None = start_time
+        self._session_end_time: datetime | None = None
         self._messages: list[Message] = []
             
     def create_empty_message(self) -> None:

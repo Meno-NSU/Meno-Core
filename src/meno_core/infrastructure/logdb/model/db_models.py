@@ -13,18 +13,18 @@ class Base(DeclarativeBase):
 class Turn(Base):
     __tablename__ = "turns"
 
-    conversation_id: Mapped[UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    mapped_column(UUID, primary_key=True, default=uuid.uuid4)
 
     conversation_id: Mapped[UUID] = mapped_column(
-        UUID, 
+        UUID,
         ForeignKey('conversations.conversation_id'),
         primary_key=True
     )
 
     turn: Mapped[int] = mapped_column(Integer, primary_key=True)
-    
-    original_question: Mapped[str] = mapped_column(Text, nullable=True) 
-    expanded_question: Mapped[str] = mapped_column(Text, nullable=True) 
+
+    original_question: Mapped[str] = mapped_column(Text, nullable=True)
+    expanded_question: Mapped[str] = mapped_column(Text, nullable=True)
     resolved_question: Mapped[str] = mapped_column(Text, nullable=True)
     answer: Mapped[str] = mapped_column(Text, nullable=True)
 
@@ -40,8 +40,5 @@ class Conversation(Base):
 
     start_time: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     end_time: Mapped[datetime] = mapped_column(DateTime, nullable=True)
- 
+
     turns: Mapped[list["Turn"]] = relationship("Turn", back_populates="conversation")
-
-
-    
