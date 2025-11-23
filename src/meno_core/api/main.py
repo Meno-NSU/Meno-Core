@@ -132,7 +132,7 @@ async def lifespan(_: FastAPI):
         logger.info("⏰ Cache-clearing scheduler started")
     try:
         # ensure path is str for mypy (settings.abbreviations_file may be Path)
-        abbr_path: str = str(settings.abbreviations_file)
+        abbr_path: str = str(settings.abbreviations_path)
         with codecs.open(abbr_path, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
             logger.info(f"📚 Successfully load {len(abbreviations)} abbreviations.")

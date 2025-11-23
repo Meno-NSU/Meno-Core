@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # RAG
     working_dir: Optional[Path] = None
-    abbreviations_file: Optional[Path] = None
+    abbreviations_path: Optional[Path] = None
     query_mode: Literal["local", "global", "hybrid", "naive", "mix"] = "naive"
 
     # LINKS
