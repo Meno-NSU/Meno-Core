@@ -12,6 +12,7 @@ import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime
+from logging import Logger, Formatter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Dict, Optional, Union
@@ -22,41 +23,40 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
-
 from lightrag import QueryParam, LightRAG
 from lightrag.utils import setup_logger
+from pydantic import BaseModel
+
+from meno_core.config.settings import settings
 from meno_core.core.link_correcter import LinkCorrecter
 from meno_core.core.link_searcher import LinkSearcher
 from meno_core.core.rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, get_current_period
-
 from meno_core.infrastructure.logdb.log_collector import LogCollector
-
-from meno_core.config.settings import settings
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
-LINKS_LOG_PATH = getattr(settings, "links_log_path", "logs/links_debug.log")
-LINKS_LOG_LEVEL = getattr(settings, "links_log_level", "DEBUG")  # DEBUG/INFO/WARNING
-LINKS_LOG_MAX_BYTES = getattr(settings, "links_log_max_bytes", 10 * 1024 * 1024)
-LINKS_LOG_BACKUP_COUNT = getattr(settings, "links_log_backup_count", 5)
+LINKS_LOG_PATH: str = getattr(settings, "links_log_path", "logs/links_debug.log")
+LINKS_LOG_LEVEL: str = getattr(settings, "links_log_level", "DEBUG")  # DEBUG/INFO/WARNING
+LINKS_LOG_MAX_BYTES: int = getattr(settings, "links_log_max_bytes", 10 * 1024 * 1024)
+LINKS_LOG_BACKUP_COUNT: int = getattr(settings, "links_log_backup_count", 5)
 
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
-logger = logging.getLogger(__name__)
+logger: Logger = logging.getLogger(__name__)
 
 try:
-    collector = LogCollector()
-except:
+    collector: LogCollector = LogCollector()
+except Exception as e:
+    logger.exception(f"Failed to initialize LogCollector: {str(e)}")
     pass
 
 # user_id -> [{"role": "user"/"assistant", "content": "..."}]
 dialogue_histories: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
-SCORES_CACHE_FILE = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
+SCORES_CACHE_FILE: str = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
 
 _scores_cache: Dict[str, Dict[str, Optional[str]]] = {}
 
@@ -64,38 +64,38 @@ _scores_cache: Dict[str, Dict[str, Optional[str]]] = {}
 def setup_links_logger(path: str, level: str = "DEBUG",
                        max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5) -> logging.Logger:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    logger = logging.getLogger("links")
-    logger.setLevel(getattr(logging, level.upper(), logging.DEBUG))
+    links_logger: Logger = logging.getLogger("links")
+    links_logger.setLevel(getattr(logging, level.upper(), logging.DEBUG))
     # чтобы не дублировать записи при hot-reload
     if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == os.path.abspath(path)
-               for h in logger.handlers):
-        fh = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
-        fmt = logging.Formatter(
+               for h in links_logger.handlers):
+        fh: RotatingFileHandler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        fmt: Formatter = logging.Formatter(
             fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"
         )
         fh.setFormatter(fmt)
-        logger.addHandler(fh)
-    return logger
+        links_logger.addHandler(fh)
+    return links_logger
 
 
 async def clear_rag_cache():
     """Clear LightRAG cache"""
     try:
-        current_time = datetime.now(pytz.timezone("Asia/Novosibirsk"))
+        current_time: datetime = datetime.now(pytz.timezone("Asia/Novosibirsk"))
         logger.info(
             f"⏰ Clearing cache at: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
 
         await rag_instance.aclear_cache()
         logger.info("✅ LightRAG cache cleared successfully")
-    except Exception as e:
-        logger.error(f"❌ Failed to clear cache: {str(e)}")
+    except Exception as clear_cache_error:
+        logger.error(f"❌ Failed to clear cache: {str(clear_cache_error)}")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_: FastAPI):
     global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler
-    links_logger = setup_links_logger(
+    links_logger: Logger = setup_links_logger(
         LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
     )
     setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
@@ -132,8 +132,8 @@ async def lifespan(app: FastAPI):
         with codecs.open(settings.abbreviations_file, mode='r', encoding='utf-8') as fp:
             abbreviations = json.load(fp)
             logger.info(f"📚 Successfully load {len(abbreviations)} abbreviations.")
-    except Exception as e:
-        logger.exception("Unable to load abbreviations", exc_info=e)
+    except Exception as load_abbreviations_error:
+        logger.exception("Unable to load abbreviations", exc_info=load_abbreviations_error)
 
     yield  # <-- здесь FastAPI продолжает работу
     # Здесь можно вызвать await rag_instance.cleanup(), если нужно
@@ -143,14 +143,17 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(lifespan=lifespan)
-    return app
+    new_app = FastAPI(lifespan=lifespan)
+    return new_app
 
 
 app = create_app()
 
 rag_instance: LightRAG
 abbreviations = {}
+ref_searcher = None
+ref_corrector = None
+scheduler = None
 
 
 class ResetRequest(BaseModel):
@@ -262,30 +265,35 @@ async def chat_completions(req: OAIChatCompletionsRequest):
 
     try:
         collector.create_message(session_id=session_id)
-    except:
+    except Exception as creating_message_error:
+        logger.exception("Failed to create message", exc_info=creating_message_error)
         pass
 
     formatted_system_prompt, query, history = await _build_prompt_and_history(req.messages)
 
     try:
         collector.add_question(session_id=session_id, text=query)
-    except:
+    except Exception as adding_question_error:
+        logger.exception("Failed to add question", exc_info=adding_question_error)
         pass
 
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
 
-    except Exception:
+    except Exception as explain_error:
+        logger.exception("Abbreviation explanation failed", exc_info=explain_error)
         expanded_query = query
     try:
         resolved_query: str = await resolve_anaphora(expanded_query, history)
-    except Exception:
+    except Exception as resolve_error:
+        logger.exception("Anaphora resolution failed", exc_info=resolve_error)
         resolved_query = expanded_query
 
     try:
         collector.add_expanded_question(session_id=session_id, text=expanded_query)
         collector.add_resolved_question(session_id=session_id, text=resolved_query)
-    except:
+    except Exception as resolve_error:
+        logger.exception("Failed to add expanded/resolved question", exc_info=resolve_error)
         pass
 
     collector.update_time(session_id=session_id)
@@ -342,16 +350,17 @@ async def chat_completions(req: OAIChatCompletionsRequest):
             try:
                 collector.add_model_answer(session_id=session_id, text=content)
                 collector.print_dto(session_id=session_id)
-            except:
+            except Exception as err:
+                logger.exception("Failed to add model answer", exc_info=err)
                 pass
 
-        except Exception as e:
+        except Exception as non_stream_error:
             logger.exception("chat.completions non-stream error")
             return JSONResponse(
                 status_code=500,
                 content={
                     "error": {
-                        "message": str(e),
+                        "message": str(non_stream_error),
                         "type": "server_error",
                     }
                 }
@@ -414,7 +423,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
             yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
 
-        except Exception as e:
+        except Exception as stream_error:
             logger.exception("chat.completions stream error")
             err_done = {
                 "id": completion_id,
@@ -429,7 +438,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                         "logprobs": None,
                     }
                 ],
-                "error": {"message": str(e), "type": "server_error"},
+                "error": {"message": str(stream_error), "type": "server_error"},
             }
             yield f"data: {json.dumps(err_done, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
@@ -474,9 +483,9 @@ async def _build_image_response(path: Path):
 
     try:
         data: bytes = await asyncio.to_thread(path.read_bytes)
-    except Exception as e:
+    except Exception as image_reading_error:
         logger.exception(f"Failed to read image: {path}")
-        raise e
+        raise image_reading_error
 
     ctype, _ = mimetypes.guess_type(str(path))
     if not ctype:
@@ -512,16 +521,13 @@ async def image_from_text(req: ImageOnlyRequest):
                 logger.warning(f"No image files found in {images_dir.resolve()}")
         else:
             logger.warning(f"Images directory not found or is not a dir: {images_dir.resolve()}")
-    except Exception:
-        logger.exception("Failed to enumerate images directory, will fallback to stub")
-
+    except Exception as image_reading_error:
+        logger.exception(f"Failed to read image: {images_dir.resolve()}", exc_info=image_reading_error)
     if random_image_path is not None:
         try:
             return await _build_image_response(random_image_path)
-        except Exception:
-            logger.exception(
-                f"Failed to send random image {random_image_path}, falling back to stub 1.jpg"
-            )
+        except Exception as image_reading_error:
+            logger.exception(f"Failed to read image: {images_dir.resolve()}", exc_info=image_reading_error)
 
     try:
         return await _build_image_response(stub_path)
@@ -534,13 +540,13 @@ async def image_from_text(req: ImageOnlyRequest):
                 "path": str(stub_path),
             },
         )
-    except Exception as e:
+    except Exception as stub_reading_error:
         logger.exception("Failed to read stub image")
         return JSONResponse(
             status_code=500,
             content={
                 "error": "read_failed",
-                "message": str(e),
+                "message": str(stub_reading_error),
                 "path": str(stub_path),
             },
         )

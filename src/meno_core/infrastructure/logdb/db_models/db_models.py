@@ -1,8 +1,10 @@
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, relationship
-from sqlalchemy import String, create_engine
-from datetime import datetime
-from sqlalchemy import DateTime, Text, UUID, Integer, ForeignKey
 import uuid
+from datetime import datetime
+
+from sqlalchemy import DateTime, Text, UUID, Integer, ForeignKey
+from sqlalchemy import String
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
 
 class Base(DeclarativeBase):
     pass

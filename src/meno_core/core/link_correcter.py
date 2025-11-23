@@ -1,14 +1,15 @@
 # You may need to install the rapidfuzz library first:
 # pip install rapidfuzz
 
-import re
-from typing import Set, Optional, Tuple
-from pathlib import Path
 import json
+import re
+from pathlib import Path
+from typing import Optional, Tuple
 
 # Using rapidfuzz for efficient Levenshtein distance calculation
 from rapidfuzz.distance import Levenshtein
 from rapidfuzz.process import extractOne
+
 
 class LinkCorrecter:
 

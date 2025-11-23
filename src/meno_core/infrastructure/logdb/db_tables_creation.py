@@ -1,7 +1,5 @@
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-from sqlalchemy import String, create_engine
-from datetime import datetime
-from sqlalchemy import DateTime, Text
+from sqlalchemy import create_engine
+
 from db_models.db_models import Base
 
 db_url = 'postgresql://logdb:123@localhost:5432/logdb'

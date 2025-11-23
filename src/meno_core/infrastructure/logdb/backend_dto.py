@@ -1,5 +1,7 @@
-from meno_core.infrastructure.logdb.message import Message
 from datetime import datetime
+
+from meno_core.infrastructure.logdb.message import Message
+
 
 class BackEndDTO:
     def __init__(self, session_id: str, start_time: datetime) -> None:

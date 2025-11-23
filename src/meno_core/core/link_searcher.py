@@ -1,10 +1,13 @@
-from pathlib import Path
 import json
-import numpy as np
-from typing import List, Tuple
-from lightrag import LightRAG
-from rag_engine import _tokenize_and_normalize
 import logging
+from pathlib import Path
+from typing import List, Tuple
+
+import numpy as np
+from lightrag import LightRAG
+
+from rag_engine import _tokenize_and_normalize
+
 
 class LinkSearcher:
     def __init__(
@@ -150,7 +153,8 @@ class LinkSearcher:
                     continue
                 if url in seen:
                     continue
-                urls.append(url); seen.add(url)
+                urls.append(url)
+                seen.add(url)
                 if len(urls) >= self.max_links:
                     break
     
