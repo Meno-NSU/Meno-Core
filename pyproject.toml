@@ -42,7 +42,7 @@ build-backend = "uv_build"
 [tool.uv]
 package = true
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "ruff",
     "mypy",
