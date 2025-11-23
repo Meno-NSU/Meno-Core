@@ -569,7 +569,7 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         token_cls.eval()
         embedder: GTEEmbedding = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
 
-        chunk_db, bm25 = await build_chunks_db_and_bm25(WORKING_DIR)
+        chunk_db, bm25 = await build_chunks_db_and_bm25(str(WORKING_DIR))
         logger2: Logger = logging.getLogger("links")
         logger2.debug("RAG init: chunks=%d", len(chunk_db))
         try:
