@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     llm_model_name: Optional[str] = None
 
     # Embedding
-    local_embedder_path: Optional[str] = None
+    local_embedder_path: Optional[Path] = None
 
     # RAG
     working_dir: Optional[Path] = None
