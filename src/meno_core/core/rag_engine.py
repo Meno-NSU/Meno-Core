@@ -137,11 +137,11 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
             if "response" not in obj:
                 for k in ("answer", "output", "content"):
                     if isinstance(obj.get(k), str):
-                        obj["response"] = obj[k];
+                        obj["response"] = obj[k]
                         break
             obj.setdefault("high_level_keywords", obj.get("hl_keywords", []))
             obj.setdefault("low_level_keywords", obj.get("ll_keywords", []))
-            obj.pop("hl_keywords", None);
+            obj.pop("hl_keywords", None)
             obj.pop("ll_keywords", None)
             return _as_json_block(obj)
         except Exception:
@@ -154,11 +154,11 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
             if "response" not in obj:
                 for k in ("answer", "output", "content"):
                     if isinstance(obj.get(k), str):
-                        obj["response"] = obj[k];
+                        obj["response"] = obj[k]
                         break
             obj.setdefault("high_level_keywords", obj.get("hl_keywords", []))
             obj.setdefault("low_level_keywords", obj.get("ll_keywords", []))
-            obj.pop("hl_keywords", None);
+            obj.pop("hl_keywords", None)
             obj.pop("ll_keywords", None)
             return _as_json_block(obj)
         except Exception:
@@ -387,12 +387,13 @@ async def gte_hf_rerank(
     del scores
     return reranking_result
 
+
 async def score_answer_relevance_to_prompt(
-    prompt: str,
-    answer: str,
-    reranker_tokenizer,
-    reranker_model,
-    normalize: bool = True,
+        prompt: str,
+        answer: str,
+        reranker_tokenizer,
+        reranker_model,
+        normalize: bool = True,
 ) -> float:
     """
     Оценивает, насколько ответ модели (answer) относится к исходному промпту (prompt)
@@ -432,10 +433,11 @@ async def score_answer_relevance_to_prompt(
         logger.error(f"Error in score_answer_relevance_to_prompt: {str(e)}", exc_info=True)
         return 1.0
 
+
 async def is_likely_hallucination(
-    original_prompt: str,
-    llm_answer: str,
-    threshold: float = DEFAULT_HALLUCINATION_THRESHOLD,
+        original_prompt: str,
+        llm_answer: str,
+        threshold: float = DEFAULT_HALLUCINATION_THRESHOLD,
 ) -> tuple[bool, float]:
     """
     Проверяет, насколько ответ модели связан с исходным промптом, и
@@ -480,6 +482,7 @@ async def is_likely_hallucination(
         f"threshold={threshold:.4f}, hallucination={is_h}"
     )
     return is_h, score
+
 
 async def initialize_rag() -> LightRAG:
     """
@@ -664,7 +667,7 @@ class GTEEmbedding(torch.nn.Module):
     @torch.no_grad()
     def compute_scores(self, pairs, dimension=None, max_length=4096,
                        dense_weight=1.0, sparse_weight=0.1):
-        t1 = [p[0] for p in pairs];
+        t1 = [p[0] for p in pairs]
         t2 = [p[1] for p in pairs]
         e1 = self.encode(t1, dimension, max_length)
         e2 = self.encode(t2, dimension, max_length)
