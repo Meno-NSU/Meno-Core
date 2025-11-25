@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 from lightrag import LightRAG  # type: ignore[import]
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data  # type: ignore[import]
-from lightrag.llm.openai import openai_complete_if_cache, openai_complete  # type: ignore[import]
+from lightrag.llm.openai import openai_complete_if_cache # type: ignore[import]
 from lightrag.utils import EmbeddingFunc  # type: ignore[import]
 from nltk import wordpunct_tokenize  # type: ignore[import]
 from nltk.stem.snowball import SnowballStemmer  # type: ignore[import]
