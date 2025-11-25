@@ -15,7 +15,7 @@ from datetime import datetime
 from logging import Logger, Formatter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, AsyncIterator, Any
 from typing import Literal, Tuple
 
 import pytz  # type: ignore[import-untyped]
@@ -154,7 +154,7 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
-rag_instance: LightRAG
+rag_instance: Optional[LightRAG] = None
 abbreviations: Dict[str, str] = {}
 ref_searcher: Optional[LinkSearcher] = None
 ref_corrector: Optional[LinkCorrecter] = None
@@ -220,42 +220,6 @@ async def _build_prompt_and_history(messages: List[OAIMsg]) -> Tuple[str, str, L
 
 _JSON_BLOCK_RE = re.compile(r"```json\s*([\s\S]*?)\s*```", re.IGNORECASE)
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*}", re.MULTILINE)
-
-
-# def _try_extract_response(text: str) -> tuple[bool, str]:
-#     """
-#     Пытается достать поле 'response' из текстового ответа:
-#     - ищем ```json ...``` и парсим объект;
-#     - если нет, ищем первый {...} и парсим;
-#     Возвращает (found, value). Если не нашли корректный JSON — value=исходный text.
-#     """
-#     if not isinstance(text, str):
-#         text = "" if text is None else str(text)
-#
-#     payload = None
-#     m = _JSON_BLOCK_RE.search(text)
-#     if m:
-#         payload = m.group(1).strip()
-#     else:
-#         m2 = _JSON_OBJECT_RE.search(text)
-#         if m2:
-#             payload = m2.group(0).strip()
-#
-#     if payload:
-#         try:
-#             obj = json.loads(payload)
-#             resp = (
-#                     obj.get("response")
-#                     or obj.get("answer")
-#                     or obj.get("output")
-#                     or obj.get("content")
-#             )
-#             if isinstance(resp, str):
-#                 return True, resp
-#         except Exception:
-#             pass
-#
-#     return False, text
 
 
 @app.post("/v1/chat/completions")
@@ -406,8 +370,10 @@ async def chat_completions(req: OAIChatCompletionsRequest):
         first = chunk({"role": "assistant"})
         yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
 
+        accumulated: list[str] = []
+
         try:
-            result = await run_lightrag()
+            result: str | AsyncIterator[str] = await run_lightrag()
 
             async def iter_pieces():
                 if hasattr(result, "__aiter__"):
@@ -415,18 +381,26 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                         if part:
                             yield str(part)
                 else:
-                    text = str(result)
-                    step = 512
+                    text: str = str(result)
+                    step: int = 512
                     for i in range(0, len(text), step):
                         yield text[i:i + step]
 
             async for piece in iter_pieces():
-                data = chunk({"content": piece})
+                accumulated.append(piece)
+                data: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({"content": piece})
                 yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-            done = chunk({}, finish_reason="stop")
+            done: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({}, finish_reason="stop")
             yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
+            full_answer = "".join(accumulated)
+            if collector is not None:
+                try:
+                    collector.add_model_answer(session_id=session_id, text=full_answer)
+                    collector.print_dto(session_id=session_id)
+                except Exception as collector_error:
+                    logger.exception("Failed to add model answer (stream)", exc_info=collector_error)
 
         except Exception as stream_error:
             logger.exception("chat.completions stream error")
