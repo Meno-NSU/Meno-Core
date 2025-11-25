@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from datetime import datetime
 from functools import partial
 from logging import Logger
@@ -17,7 +18,7 @@ import torch
 import torch.nn.functional as F
 from lightrag import LightRAG  # type: ignore[import]
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data  # type: ignore[import]
-from lightrag.llm.openai import openai_complete_if_cache  # type: ignore[import]
+from lightrag.llm.openai import openai_complete_if_cache, openai_complete  # type: ignore[import]
 from lightrag.utils import EmbeddingFunc  # type: ignore[import]
 from nltk import wordpunct_tokenize  # type: ignore[import]
 from nltk.stem.snowball import SnowballStemmer  # type: ignore[import]
@@ -176,8 +177,14 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
 
 
 # ---------- LLM wrapper ----------
-async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List[Any]] = None,
-                         **kwargs) -> str:
+async def llm_model_func(prompt: str,
+                         system_prompt: Optional[str] = None,
+                         history_messages: Optional[List[Any]] = None,
+                         *,
+                         stream: bool = False,
+                         enable_cot: bool = False,
+                         hashing_kv=None,
+                         **kwargs) -> Union[str, AsyncIterator[str]]:
     """
     Функция для взаимодействия с языковой моделью (LLM).
 
@@ -194,15 +201,35 @@ async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, histo
         history_messages = []
     try:
         logger.info(f"Sending request to LLM with {len(history_messages)} messages, prompt: {prompt}")
+        if not stream:
+            answer: str = await generate_with_llm(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                enable_cot=enable_cot,
+                hashing_kv=hashing_kv,
+                **kwargs,
+            )
+            logger.info(f"Received response from LLM, length: {len(answer)}")
+            return answer
 
-        answer: str = await generate_with_llm(
+        result = await openai_complete_if_cache(
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
-            **kwargs
+            enable_cot=enable_cot,
+            hashing_kv=hashing_kv,
+            stream=True,
+            **kwargs,
         )
-        logger.info(f"Received response from LLM, length: {len(answer)}")
-        return answer
+
+        if isinstance(result, str):
+            async def _to_stream() -> AsyncIterator[str]:
+                yield result
+
+            return _to_stream()
+
+        return result
 
     except Exception as e:
         logger.error(f"Error in llm_model_func: {str(e)}", exc_info=True)
@@ -210,36 +237,47 @@ async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, histo
 
 
 # make system_prompt Optional and avoid mutable default for history_messages
-async def generate_with_llm(prompt: str, system_prompt: Optional[str] = None,
-                            history_messages: Optional[List[Any]] = None, **kwargs):
+async def generate_with_llm(
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        history_messages: Optional[List[Any]] = None,
+        **kwargs: Any,
+) -> str:
     if history_messages is None:
         history_messages = []
-    kwargs.pop('enable_cot', None)
-    extra_body = {
-        "chat_template_kwargs": {
-            "enable_thinking": False
-        }
-    }
-    if "extra_body" in kwargs:
-        extra_body.update(kwargs["extra_body"])
-    generated_result = await openai_complete_if_cache(
+
+    kwargs.pop("stream", None)
+
+    kwargs.pop("enable_cot", None)
+
+    result = await openai_complete_if_cache(
         model=settings.llm_model_name,
         prompt=prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=False,
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
-        temperature=TEMPERATURE,
-        enable_cot=False,
-        extra_body=extra_body,
-        **{k: v for k, v in kwargs.items() if k != "extra_body"}
+        **kwargs,
     )
-    logger.info(f"Full raw answer: {generated_result.strip()}")
-    thinking_end_position = generated_result.find(THINK_END_TOKEN)
+
+    if not isinstance(result, str):
+        chunks: list[str] = []
+        async for part in result:
+            chunks.append(part)
+        result = "".join(chunks)
+
+    logger.info(f"Full raw answer: {result.strip()}")
+
+    thinking_end_position = result.find(THINK_END_TOKEN)
     if thinking_end_position >= 0:
-        logger.info(f"Reasoning part was removed from 0 to: {thinking_end_position} position")
-        generated_result = generated_result[(thinking_end_position + len(THINK_END_TOKEN)):]
-    return generated_result.strip()
+        logger.info(
+            "Reasoning part was removed from 0 to %s position",
+            thinking_end_position,
+        )
+        result = result[thinking_end_position + len(THINK_END_TOKEN):]
+
+    return result.strip()
 
 
 async def explain_abbreviations(question: str, abbreviations: dict) -> str:
