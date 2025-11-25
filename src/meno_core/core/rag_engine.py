@@ -214,6 +214,7 @@ async def llm_model_func(prompt: str,
             return answer
 
         result = await openai_complete_if_cache(
+            model=settings.llm_model_name,
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
