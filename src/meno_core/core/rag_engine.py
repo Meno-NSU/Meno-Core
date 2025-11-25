@@ -220,6 +220,8 @@ async def llm_model_func(prompt: str,
             history_messages=history_messages,
             enable_cot=enable_cot,
             hashing_kv=hashing_kv,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
             stream=True,
             **kwargs,
         )
