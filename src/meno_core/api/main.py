@@ -223,14 +223,13 @@ _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*}", re.MULTILINE)
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(req: OAIChatCompletionsRequest):
+async def chat_completions(request: OAIChatCompletionsRequest):
     if rag_instance is None:
         raise RuntimeError("RAG is not initialized.")
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
-    model_id: str = req.model or "menon-1"
-    # hardcoded
-    session_id = 'id'
+    model_id: str = request.model or "menon-1"
+    session_id: str = request.user or f"session-{completion_id}"
 
     try:
         collector.create_message(session_id=session_id)
@@ -238,7 +237,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
         logger.exception("Failed to create message", exc_info=creating_message_error)
         pass
 
-    formatted_system_prompt, query, history = await _build_prompt_and_history(req.messages)
+    formatted_system_prompt, query, history = await _build_prompt_and_history(request.messages)
 
     try:
         collector.add_question(session_id=session_id, text=query)
@@ -276,12 +275,12 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                 max_total_tokens=QUERY_MAX_TOKENS,
                 history_turns=len(history),
                 conversation_history=history,
-                stream=req.stream,
+                stream=request.stream,
             ),
             system_prompt=formatted_system_prompt
         )
 
-    if not req.stream:
+    if not request.stream:
         try:
             result = await run_lightrag()
             if hasattr(result, "__aiter__"):
