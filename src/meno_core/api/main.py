@@ -432,7 +432,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     )
 
 
-@app.post("/clear_history", response_model=ResetResponse)
+@app.post("/v1/chat/completions/clear_history", response_model=ResetResponse)
 async def reset_history(request: ResetRequest):
     chat_id = request.chat_id
     cleared = False
