@@ -435,13 +435,26 @@ async def chat_completions(request: OAIChatCompletionsRequest):
 @app.post("/clear_history", response_model=ResetResponse)
 async def reset_history(request: ResetRequest):
     chat_id = request.chat_id
+    cleared = False
 
     if chat_id in dialogue_histories:
         dialogue_histories.pop(chat_id)
-        logger.info(f"История очищена для пользователя {chat_id}")
+        cleared = True
+        logger.info(f"dialogue_histories очищена для пользователя {chat_id}")
+
+    try:
+        if collector is not None and hasattr(collector, '_unreleased_dtos'):
+            if chat_id in collector._unreleased_dtos:
+                collector._unreleased_dtos.pop(chat_id)
+                cleared = True
+                logger.info(f"История LogCollector очищена для пользователя {chat_id}")
+    except Exception as clear_collector_error:
+        logger.exception(f"Ошибка при очистке истории LogCollector для {chat_id}", exc_info=clear_collector_error)
+
+    if cleared:
+        logger.info(f"✅ История успешно очищена для пользователя {chat_id}")
     else:
-        logger.info(
-            f"Попытка очистки истории: история для пользователя {chat_id} не найдена")
+        logger.info(f"ℹ️ История для пользователя {chat_id} не найдена или уже была очищена")
 
     return ResetResponse(chat_id=chat_id, status="ok")
 
