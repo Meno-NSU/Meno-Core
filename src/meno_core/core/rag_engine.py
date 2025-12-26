@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import re
 from collections.abc import AsyncIterator
@@ -10,7 +11,6 @@ from pathlib import Path
 from re import Match, Pattern
 from typing import Any, Optional, List, Union
 
-import math
 import numpy as np
 # third-party imports without stubs - mark them to silence mypy import-untyped
 import pytz  # type: ignore[import]
@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 from lightrag import LightRAG  # type: ignore[import]
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data  # type: ignore[import]
-from lightrag.llm.openai import openai_complete_if_cache # type: ignore[import]
+from lightrag.llm.openai import openai_complete_if_cache  # type: ignore[import]
 from lightrag.utils import EmbeddingFunc  # type: ignore[import]
 from nltk import wordpunct_tokenize  # type: ignore[import]
 from nltk.stem.snowball import SnowballStemmer  # type: ignore[import]
@@ -60,9 +60,9 @@ SYSTEM_PROMPT_FOR_MENO: str = (
     'Новосибирском Академгородке. При ответах вы глубоко рассуждаете, опираясь на контекст, найденный '
     'поисковой системой, но не просто повторяете этот контекст, а саммаризируете и выделяете самое главное '
     'для краткого и максимально полезного ответа. Если же вы считаете, что какие-то элементы контекста '
-    'являются лишними, противоречат другим элементам или не соответствуют вопросу (а такое вполне может '
-    'быть из-за несовершенства механизма поиска этого контекста в базе знаний), то игнорируйте их при '
-    'подготовке ответа. После основного текста ответа вы всегда добавляете раздел "Полезные ссылки", в '
+    'являются лишними, противоречат другим элементам или не соответствуют вопросу, то игнорируйте их при '
+    'подготовке ответа. Используйте как можно меньше Markdown-разметки и форматирования и старайтесь писать понятным'
+    'сплошным текстом, структурируя его по абзацам. После основного текста ответа вы всегда добавляете раздел "Полезные ссылки", в '
     'котором выписываете перечень дополнительных ссылок, на которые вы опирались в своём ответе и которые '
     'полезно будет почитать пользователю.\nВы очень любите Новосибирский государственный университет и '
     'стремитесь заинтересовать разные категории своих пользователей: абитуриентов поступлением в '
