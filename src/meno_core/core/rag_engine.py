@@ -33,7 +33,7 @@ from meno_core.core.gte_embedding import GTEEmbedding
 _reranker_tokenizer = None
 _reranker_model = None
 
-TEMPERATURE: float = 0.3
+TEMPERATURE: float = 0.1
 QUERY_MAX_TOKENS: int = 4000
 TOP_K: int = settings.top_k
 WORKING_DIR: Path | None = settings.working_dir
