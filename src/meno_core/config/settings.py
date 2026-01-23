@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # RAG
     working_dir: Optional[Path] = Field(
         default=None,
-        validation_alias="WORKING_DIR",
+        validation_alias="LIGHTRAG_WORKING_DIR",
     )
     abbreviations_path: Optional[Path] = Field(
         default=None,
@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     )
     max_links: int = Field(default=5, validation_alias="MAX_LINKS")
     top_k: int = Field(default=15, validation_alias="TOP_K")
+    chunk_top_k: int = Field(default=20, validation_alias="CHUNK_TOP_K")
     dist_threshold: float = Field(default=0.70, validation_alias="DIST_THRESHOLD")
     correct_dist_threshold: float = Field(
         default=0.1,
@@ -78,6 +79,14 @@ class Settings(BaseSettings):
     query_max_tokens: int = Field(
         default=4000,
         validation_alias="QUERY_MAX_TOKENS",
+    )
+    query_max_entity_tokens: int = Field(
+        default=6000,
+        validation_alias="QUERY_MAX_ENTITY_TOKENS",
+    )
+    query_max_relational_tokens: int = Field(
+        default=8000,
+        validation_alias="QUERY_MAX_RELATIONAL_TOKENS",
     )
 
     # LOGS

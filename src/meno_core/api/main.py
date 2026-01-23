@@ -272,7 +272,10 @@ async def chat_completions(request: OAIChatCompletionsRequest):
             param=QueryParam(
                 mode=QUERY_MODE,
                 top_k=TOP_K,
+                chunk_top_k=settings.chunk_top_k,
                 max_total_tokens=QUERY_MAX_TOKENS,
+                max_entity_tokens=settings.query_max_entity_tokens,
+                max_relation_tokens=settings.query_max_relational_tokens,
                 history_turns=len(history),
                 conversation_history=history,
                 stream=request.stream,
