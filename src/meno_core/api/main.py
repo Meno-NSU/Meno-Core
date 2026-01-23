@@ -546,6 +546,21 @@ async def image_from_text(req: ImageOnlyRequest):
         )
 
 
+@app.get("/llm_address")
+async def get_ip():
+    return {"ip": settings.openai_base_url}
+
+
+@app.post("/llm_address")
+async def set_ip(ip: str):
+    old_ip = settings.openai_base_url
+    settings.openai_base_url = ip
+    return {
+        "ip": settings.openai_base_url,
+        "old_ip": old_ip
+    }
+
+
 @app.get("/v1/models")
 async def list_models():
     return {
