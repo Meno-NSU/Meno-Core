@@ -81,7 +81,7 @@ class Settings(BaseSettings):
         validation_alias="QUERY_MAX_TOKENS",
     )
 
-    chunk_max_tokens: int = Field(djefault=1024, validation_alias="CHUNK_MAX_TOKENS")
+    chunk_max_tokens: int = Field(default=1024, validation_alias="CHUNK_MAX_TOKENS")
 
     entity_max_tokens: int = Field(default=2816, validation_alias="ENTITY_MAX_TOKENS")
     relation_max_tokens: int = Field(default=4096, validation_alias="RELATION_MAX_TOKENS")
