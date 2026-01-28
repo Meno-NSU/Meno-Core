@@ -15,7 +15,7 @@ from datetime import datetime
 from logging import Logger, Formatter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, AsyncIterator, Any
 from typing import Literal, Tuple
 
 import pytz  # type: ignore[import-untyped]
@@ -154,7 +154,7 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
-rag_instance: LightRAG
+rag_instance: Optional[LightRAG] = None
 abbreviations: Dict[str, str] = {}
 ref_searcher: Optional[LinkSearcher] = None
 ref_corrector: Optional[LinkCorrecter] = None
@@ -222,51 +222,14 @@ _JSON_BLOCK_RE = re.compile(r"```json\s*([\s\S]*?)\s*```", re.IGNORECASE)
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*}", re.MULTILINE)
 
 
-# def _try_extract_response(text: str) -> tuple[bool, str]:
-#     """
-#     Пытается достать поле 'response' из текстового ответа:
-#     - ищем ```json ...``` и парсим объект;
-#     - если нет, ищем первый {...} и парсим;
-#     Возвращает (found, value). Если не нашли корректный JSON — value=исходный text.
-#     """
-#     if not isinstance(text, str):
-#         text = "" if text is None else str(text)
-#
-#     payload = None
-#     m = _JSON_BLOCK_RE.search(text)
-#     if m:
-#         payload = m.group(1).strip()
-#     else:
-#         m2 = _JSON_OBJECT_RE.search(text)
-#         if m2:
-#             payload = m2.group(0).strip()
-#
-#     if payload:
-#         try:
-#             obj = json.loads(payload)
-#             resp = (
-#                     obj.get("response")
-#                     or obj.get("answer")
-#                     or obj.get("output")
-#                     or obj.get("content")
-#             )
-#             if isinstance(resp, str):
-#                 return True, resp
-#         except Exception:
-#             pass
-#
-#     return False, text
-
-
 @app.post("/v1/chat/completions")
-async def chat_completions(req: OAIChatCompletionsRequest):
+async def chat_completions(request: OAIChatCompletionsRequest):
     if rag_instance is None:
         raise RuntimeError("RAG is not initialized.")
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
-    model_id: str = req.model or "menon-1"
-    # hardcoded
-    session_id = 'id'
+    model_id: str = request.model or "menon-1"
+    session_id: str = request.user or f"session-{completion_id}"
 
     try:
         collector.create_message(session_id=session_id)
@@ -274,7 +237,7 @@ async def chat_completions(req: OAIChatCompletionsRequest):
         logger.exception("Failed to create message", exc_info=creating_message_error)
         pass
 
-    formatted_system_prompt, query, history = await _build_prompt_and_history(req.messages)
+    formatted_system_prompt, query, history = await _build_prompt_and_history(request.messages)
 
     try:
         collector.add_question(session_id=session_id, text=query)
@@ -313,14 +276,14 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                 max_total_tokens=QUERY_MAX_TOKENS,
                 history_turns=len(history),
                 conversation_history=history,
-                stream=req.stream,
                 max_entity_tokens=ENTITY_MAX_TOKENS,
                 max_relation_tokens=RELATION_MAX_TOKENS,
+                stream=request.stream,
             ),
             system_prompt=formatted_system_prompt
         )
 
-    if not req.stream:
+    if not request.stream:
         try:
             result = await run_lightrag()
             if hasattr(result, "__aiter__"):
@@ -409,8 +372,10 @@ async def chat_completions(req: OAIChatCompletionsRequest):
         first = chunk({"role": "assistant"})
         yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
 
+        accumulated: list[str] = []
+
         try:
-            result = await run_lightrag()
+            result: str | AsyncIterator[str] = await run_lightrag()
 
             async def iter_pieces():
                 if hasattr(result, "__aiter__"):
@@ -418,18 +383,26 @@ async def chat_completions(req: OAIChatCompletionsRequest):
                         if part:
                             yield str(part)
                 else:
-                    text = str(result)
-                    step = 512
+                    text: str = str(result)
+                    step: int = 512
                     for i in range(0, len(text), step):
                         yield text[i:i + step]
 
             async for piece in iter_pieces():
-                data = chunk({"content": piece})
+                accumulated.append(piece)
+                data: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({"content": piece})
                 yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-            done = chunk({}, finish_reason="stop")
+            done: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({}, finish_reason="stop")
             yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
+            full_answer = "".join(accumulated)
+            if collector is not None:
+                try:
+                    collector.add_model_answer(session_id=session_id, text=full_answer)
+                    collector.print_dto(session_id=session_id)
+                except Exception as collector_error:
+                    logger.exception("Failed to add model answer (stream)", exc_info=collector_error)
 
         except Exception as stream_error:
             logger.exception("chat.completions stream error")
@@ -462,16 +435,29 @@ async def chat_completions(req: OAIChatCompletionsRequest):
     )
 
 
-@app.post("/clear_history", response_model=ResetResponse)
+@app.post("/v1/chat/completions/clear_history", response_model=ResetResponse)
 async def reset_history(request: ResetRequest):
     chat_id = request.chat_id
+    cleared = False
 
     if chat_id in dialogue_histories:
         dialogue_histories.pop(chat_id)
-        logger.info(f"История очищена для пользователя {chat_id}")
+        cleared = True
+        logger.info(f"dialogue_histories очищена для пользователя {chat_id}")
+
+    try:
+        if collector is not None and hasattr(collector, '_unreleased_dtos'):
+            if chat_id in collector._unreleased_dtos:
+                collector._unreleased_dtos.pop(chat_id)
+                cleared = True
+                logger.info(f"История LogCollector очищена для пользователя {chat_id}")
+    except Exception as clear_collector_error:
+        logger.exception(f"Ошибка при очистке истории LogCollector для {chat_id}", exc_info=clear_collector_error)
+
+    if cleared:
+        logger.info(f"✅ История успешно очищена для пользователя {chat_id}")
     else:
-        logger.info(
-            f"Попытка очистки истории: история для пользователя {chat_id} не найдена")
+        logger.info(f"ℹ️ История для пользователя {chat_id} не найдена или уже была очищена")
 
     return ResetResponse(chat_id=chat_id, status="ok")
 

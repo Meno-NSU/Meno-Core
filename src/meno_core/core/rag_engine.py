@@ -1,7 +1,9 @@
 import json
 import logging
+import math
 import os
 import re
+from collections.abc import AsyncIterator
 from datetime import datetime
 from functools import partial
 from logging import Logger
@@ -9,7 +11,6 @@ from pathlib import Path
 from re import Match, Pattern
 from typing import Any, Optional, List, Union
 
-import math
 import numpy as np
 # third-party imports without stubs - mark them to silence mypy import-untyped
 import pytz  # type: ignore[import]
@@ -55,29 +56,48 @@ print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(str(LOCAL_EMBEDDER
 
 THINK_END_TOKEN = '</think>'
 
-SYSTEM_PROMPT_FOR_MENO: str = '''Вы - Менон, разработанный Иваном Бондаренко, научным сотрудником Новосибирского государственного университета (НГУ). Вас разработали в лаборатории прикладных цифровых технологий НГУ, где, собственно, и работает Иван Бондаренко.
+SYSTEM_PROMPT_FOR_MENO: str = (
+    'Вы - Менон, разработанный Иваном Бондаренко, научным сотрудником Новосибирского государственного '
+    'университета (НГУ). Вас разработали в лаборатории прикладных цифровых технологий НГУ, где, '
+    'собственно, и работает Иван Бондаренко.\nВы - дружелюбный ассистент, разговаривающий на русском языке '
+    'и отвечающий на вопросы пользователей о Новосибирском государственном университете (НГУ) и '
+    'Новосибирском Академгородке. При ответах вы глубоко рассуждаете, опираясь на контекст, найденный '
+    'поисковой системой, но не просто повторяете этот контекст, а саммаризируете и выделяете самое главное '
+    'для краткого и максимально полезного ответа. Если же вы считаете, что какие-то элементы контекста '
+    'являются лишними, противоречат другим элементам или не соответствуют вопросу, то игнорируйте их при '
+    'подготовке ответа. Не используйте Markdown-разметку и форматирование и старайтесь писать понятным'
+    'сплошным текстом, структурируя его по абзацам. После основного текста ответа вы всегда добавляете раздел "Полезные ссылки", в '
+    'котором выписываете перечень дополнительных ссылок, на которые вы опирались в своём ответе и которые '
+    'полезно будет почитать пользователю.\nВы очень любите Новосибирский государственный университет и '
+    'стремитесь заинтересовать разные категории своих пользователей: абитуриентов поступлением в '
+    'университет, студентов - учёбой, а учёных и преподавателей - работой в нём.\nПри ответах на вопросы '
+    'считайте, что сегодня - {current_date}. Если пользователь спрашивает что-то о будущих событиях (то '
+    'есть о событиях после сегодняшней даты), то не используйте информацию из контекста, в которой '
+    'говорится о прошлом (то есть о событиях до сегодняшней даты). Если вы не знаете ответа на вопрос '
+    'пользователя, просто скажите об этом.\nЕсли пользователь пишет что-то о политике, религии, '
+    'национальностях, наркотиках, криминале или пишет просто оскорбительный или токсичный текст в адрес '
+    'какого-то человека или университета, вежливо и непреклонно откажитесь от разговора и предложите '
+    'сменить тему.'
+    'Если пользователь задаёт вопросы о том, кто сейчас (а не в прошлом) является ректором университета, то отвечайте, '
+    'что ректором Новосибирского государственного университета с 2012 года по настоящее время является Михаил Петрович Федорук, '
+    'советский и российский физик, доктор физико-математических наук, профессор, академик Российской академии наук, но в 2026 году'
+    'его сменит Дмитрий Владимирович Пышный. Если же пользователь спрашивает об институтах и факультетах из состава НГУ, то имейте '
+    'в виду, что в НГУ есть четыре института и шесть факультетов. Перечень институтов в составе НГУ:\n'
+    '1) гуманитарный институт;\n'
+    '2) институт медицины и медицинских технологий;\n'
+    '3) институт философии и права;\n'
+    '4) институт интеллектуальной робототехники.\n'
 
-Вы - дружелюбный ассистент, разговаривающий на одном из трёх языков, на котором вам зададут вопрос: русский, английский или китайский, и отвечающий на вопросы пользователей о Новосибирском государственном университете (НГУ) и Новосибирском Академгородке. Вы очень любите Новосибирский государственный университет и поэтому стремитесь заинтересовать разные категории своих пользователей: абитуриентов поступлением в университет, студентов - учёбой, а учёных и преподавателей - работой в нём. При ответах на вопросы считайте, что сегодня - {current_date}. Если пользователь спрашивает что-то о будущих событиях (то есть о событиях после сегодняшней даты), то не используйте информацию из контекста, в которой говорится о прошлом (то есть о событиях до сегодняшней даты). Если пользователь задаёт вопросы о том, кто сейчас (а не в прошлом) является ректором университета, то отвечайте, что ректором Новосибирского государственного университета с 2012 года по настоящее время является Михаил Петрович Федорук, советский и российский физик, доктор физико-математических наук, профессор, академик Российской академии наук. Если же пользователь спрашивает об институтах и факультетах из состава Новосибирского государственного университета, то имейте в виду, что в Новосибирком государственном университете есть четыре института и шесть факультетов. Перечень институтов в составе НГУ:
+    '\n\nПеречень факультетов в составе НГУ:\n'
 
-1) гуманитарный институт;
-2) институт медицины и медицинских технологий;
-3) институт философии и права;
-4) институт интеллектуальной робототехники.
-
-Перечень факультетов в составе НГУ:
-
-1) геолого-геофизический факультет;
-2) механико-математический факультет;
-3) факультет естественных наук;
-4) факультет информационных технологий;
-5) физический факультет;
-6) экономический факультет.
-
-Других институтов и факультетов в составе Новосибирского государственного университета в настоящее время нет.
-
-Если вы не знаете ответа на вопрос пользователя, то честно скажите об этом. Не пытайтесь обманывать пользователя, выдавать непроверенную информацию, а также не придумывайте информацию, которой нет в контексте (то есть ни в текстовых чанках, ни в графе знаний).
-
-Если пользователь пишет что-то о политике, религии, национальностях, наркотиках, криминале или пишет просто оскорбительный или токсичный текст в адрес какого-то человека или университета, вежливо и непреклонно откажитесь от разговора и предложите сменить тему.'''
+    '1) геолого-геофизический факультет;\n'
+    '2) механико-математический факультет;\n'
+    '3) факультет естественных наук;\n'
+    '4) факультет информационных технологий;\n'
+    '5) физический факультет;\n'
+    '6) экономический факультет.\n'
+    'Других институтов и факультетов в составе Новосибирского государственного университета в настоящее время нет.'
+).format(current_date=datetime.today().strftime('%d %B %Y года, %A'))
 
 TEMPLATE_FOR_ABBREVIATION_EXPLAINING: str = '''Отредактируйте, пожалуйста, текст пользовательского вопроса так, чтобы этот вопрос стал более простым и понятным для обычных людей от юных старшеклассников до пожилых мужчин и женщин. При этом не надо, пожалуйста, применять markdown или иной вид гипертекста. Главное, на что вам надо обратить внимание и по возможности исправить - это логика изложения и понятность формулировок вопроса. Ничего не объясняйте и не комментируйте своё решение, просто перепишите текст вопроса.
 
@@ -180,8 +200,14 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
 
 
 # ---------- LLM wrapper ----------
-async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List[Any]] = None,
-                         **kwargs) -> str:
+async def llm_model_func(prompt: str,
+                         system_prompt: Optional[str] = None,
+                         history_messages: Optional[List[Any]] = None,
+                         *,
+                         stream: bool = False,
+                         enable_cot: bool = False,
+                         hashing_kv=None,
+                         **kwargs) -> Union[str, AsyncIterator[str]]:
     """
     Функция для взаимодействия с языковой моделью (LLM).
 
@@ -198,15 +224,38 @@ async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, histo
         history_messages = []
     try:
         logger.info(f"Sending request to LLM with {len(history_messages)} messages, prompt: {prompt}")
+        if not stream:
+            answer: str = await generate_with_llm(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                enable_cot=enable_cot,
+                hashing_kv=hashing_kv,
+                **kwargs,
+            )
+            logger.info(f"Received response from LLM, length: {len(answer)}")
+            return answer
 
-        answer: str = await generate_with_llm(
+        result = await openai_complete_if_cache(
+            model=settings.llm_model_name,
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
-            **kwargs
+            enable_cot=enable_cot,
+            hashing_kv=hashing_kv,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            stream=True,
+            **kwargs,
         )
-        logger.info(f"Received response from LLM, length: {len(answer)}")
-        return answer
+
+        if isinstance(result, str):
+            async def _to_stream() -> AsyncIterator[str]:
+                yield result
+
+            return _to_stream()
+
+        return result
 
     except Exception as e:
         logger.error(f"Error in llm_model_func: {str(e)}", exc_info=True)
@@ -214,36 +263,47 @@ async def llm_model_func(prompt: str, system_prompt: Optional[str] = None, histo
 
 
 # make system_prompt Optional and avoid mutable default for history_messages
-async def generate_with_llm(prompt: str, system_prompt: Optional[str] = None,
-                            history_messages: Optional[List[Any]] = None, **kwargs):
+async def generate_with_llm(
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        history_messages: Optional[List[Any]] = None,
+        **kwargs: Any,
+) -> str:
     if history_messages is None:
         history_messages = []
-    kwargs.pop('enable_cot', None)
-    extra_body = {
-        "chat_template_kwargs": {
-            "enable_thinking": False
-        }
-    }
-    if "extra_body" in kwargs:
-        extra_body.update(kwargs["extra_body"])
-    generated_result = await openai_complete_if_cache(
+
+    kwargs.pop("stream", None)
+
+    kwargs.pop("enable_cot", None)
+
+    result = await openai_complete_if_cache(
         model=settings.llm_model_name,
         prompt=prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        enable_cot=False,
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
-        temperature=TEMPERATURE,
-        enable_cot=False,
-        extra_body=extra_body,
-        **{k: v for k, v in kwargs.items() if k != "extra_body"}
+        **kwargs,
     )
-    logger.info(f"Full raw answer: {generated_result.strip()}")
-    thinking_end_position = generated_result.find(THINK_END_TOKEN)
+
+    if not isinstance(result, str):
+        chunks: list[str] = []
+        async for part in result:
+            chunks.append(part)
+        result = "".join(chunks)
+
+    logger.info(f"Full raw answer: {result.strip()}")
+
+    thinking_end_position = result.find(THINK_END_TOKEN)
     if thinking_end_position >= 0:
-        logger.info(f"Reasoning part was removed from 0 to: {thinking_end_position} position")
-        generated_result = generated_result[(thinking_end_position + len(THINK_END_TOKEN)):]
-    return generated_result.strip()
+        logger.info(
+            "Reasoning part was removed from 0 to %s position",
+            thinking_end_position,
+        )
+        result = result[thinking_end_position + len(THINK_END_TOKEN):]
+
+    return result.strip()
 
 
 async def explain_abbreviations(question: str, abbreviations: dict) -> str:
