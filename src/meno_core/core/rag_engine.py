@@ -32,17 +32,21 @@ from meno_core.core.gte_embedding import GTEEmbedding
 _reranker_tokenizer = None
 _reranker_model = None
 
-TEMPERATURE: float = 0.3
-QUERY_MAX_TOKENS: int = 4000
+TEMPERATURE: float = settings.temperature
+QUERY_MAX_TOKENS: int = settings.query_max_tokens
+CHUNK_MAX_TOKENS: int = settings.chunk_max_tokens
+ENTITY_MAX_TOKENS: int = settings.entity_max_tokens
+RELATION_MAX_TOKENS: int = settings.relation_max_tokens
 TOP_K: int = settings.top_k
+CHUNK_TOP_K: int = settings.chunk_top_k
 WORKING_DIR: Path | None = settings.working_dir
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(str(WORKING_DIR))}')
 ABBREVIATIONS_PATH: Path | None = settings.abbreviations_path
 print(f'os.path.isfile({ABBREVIATIONS_PATH}) = {os.path.isfile(str(ABBREVIATIONS_PATH))}')
 URLS_PATH: str = str(settings.urls_path)
 print(f'os.path.isfile({URLS_PATH}) = {os.path.isfile(str(URLS_PATH))}')
-LOCAL_EMBEDDER_DIMENSION: int = 768
-LOCAL_EMBEDDER_MAX_TOKENS: int = 2048
+LOCAL_EMBEDDER_DIMENSION: int = settings.embedder_dim
+LOCAL_EMBEDDER_MAX_TOKENS: int = settings.embedder_max_tokens
 LOCAL_EMBEDDER_PATH: Path | None = settings.local_embedder_path
 LOCAL_RERANKER_MAX_TOKENS: int = 4096
 LOCAL_RERANKER_PATH: Path | None = settings.local_reranker_path
@@ -545,7 +549,7 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
             vector_db_storage_cls_kwargs={
                 'cosine_better_than_threshold': 0.15
             },
-            chunk_token_size=2048,
+            chunk_token_size=CHUNK_MAX_TOKENS,
             llm_model_func=llm_model_func,
             cosine_better_than_threshold=0.05,
             embedding_func=EmbeddingFunc(

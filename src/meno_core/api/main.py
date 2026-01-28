@@ -31,7 +31,7 @@ from meno_core.config.settings import settings
 from meno_core.core.link_correcter import LinkCorrecter
 from meno_core.core.link_searcher import LinkSearcher
 from meno_core.core.rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, get_current_period
+    explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K
 from meno_core.infrastructure.logdb.log_collector import LogCollector
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
@@ -309,10 +309,13 @@ async def chat_completions(req: OAIChatCompletionsRequest):
             param=QueryParam(
                 mode=QUERY_MODE,
                 top_k=TOP_K,
+                chunk_top_k=CHUNK_TOP_K,
                 max_total_tokens=QUERY_MAX_TOKENS,
                 history_turns=len(history),
                 conversation_history=history,
                 stream=req.stream,
+                max_entity_tokens=ENTITY_MAX_TOKENS,
+                max_relation_tokens=RELATION_MAX_TOKENS,
             ),
             system_prompt=formatted_system_prompt
         )

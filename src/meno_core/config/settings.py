@@ -35,7 +35,7 @@ class Settings(BaseSettings):
         validation_alias="ABBREVIATIONS_PATH",
     )
     query_mode: Literal["local", "global", "hybrid", "naive", "mix"] = Field(
-        default="naive",
+        default="mix",
         validation_alias="QUERY_MODE",
     )
 
@@ -53,7 +53,8 @@ class Settings(BaseSettings):
         validation_alias="URLS_PATH",
     )
     max_links: int = Field(default=5, validation_alias="MAX_LINKS")
-    top_k: int = Field(default=15, validation_alias="TOP_K")
+    top_k: int = Field(default=100, validation_alias="TOP_K")
+    chunk_top_k: int = Field(default=12, validation_alias="CHUNK_TOP_K")
     dist_threshold: float = Field(default=0.70, validation_alias="DIST_THRESHOLD")
     correct_dist_threshold: float = Field(
         default=0.1,
@@ -63,7 +64,7 @@ class Settings(BaseSettings):
     # EMBEDDER
     embedder_dim: int = Field(default=768, validation_alias="EMBEDDER_DIM")
     embedder_max_tokens: int = Field(
-        default=4096,
+        default=1024,
         validation_alias="EMBEDDER_MAX_TOKENS",
     )
 
@@ -76,9 +77,14 @@ class Settings(BaseSettings):
     # LIGHT RAG
     temperature: float = Field(default=0.3, validation_alias="TEMPERATURE")
     query_max_tokens: int = Field(
-        default=4000,
+        default=14_000,
         validation_alias="QUERY_MAX_TOKENS",
     )
+
+    chunk_max_tokens: int = Field(djefault=1024, validation_alias="CHUNK_MAX_TOKENS")
+
+    entity_max_tokens: int = Field(default=2816, validation_alias="ENTITY_MAX_TOKENS")
+    relation_max_tokens: int = Field(default=4096, validation_alias="RELATION_MAX_TOKENS")
 
     # LOGS
     log_file_path: Path = Field(
