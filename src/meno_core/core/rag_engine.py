@@ -600,7 +600,12 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
                 )
             ),
             rerank_model_func=partial(gte_hf_rerank, tokenizer=reranker_tokenizer, reranker=reranker_model),
-            addon_params={'language': 'Russian'}
+            addon_params={'language': 'Russian'},
+            enable_llm_cache=settings.enable_caching,
+            enable_llm_cache_for_entity_extract=settings.enable_caching,
+            embedding_cache_config={
+                "enabled": False, "similarity_threshold": 0.95, "use_llm_check": False
+            }
         )
         logger.info("Initializing RAG storages...")
         await rag.initialize_storages()

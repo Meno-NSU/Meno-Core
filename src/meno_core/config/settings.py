@@ -38,6 +38,14 @@ class Settings(BaseSettings):
         default="naive",
         validation_alias="QUERY_MODE",
     )
+    enable_caching: bool = Field(
+        default=True,
+        validation_alias="ENABLE_CACHING",
+    )
+    clear_cache: bool = Field(
+        default=False,
+        validation_alias="CLEAR_CACHE",
+    )
 
     # LINKS
     enable_links_addition: bool = Field(

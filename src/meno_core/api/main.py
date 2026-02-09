@@ -267,6 +267,9 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     collector.update_time(session_id=session_id)
 
     async def run_lightrag():
+        if settings.clear_cache:
+            await rag_instance.aclear_cache(modes=["default", "naive", "local", "global", "hybrid", "mix"])
+            logger.info("LightRAG cache cleared successfully")
         return await rag_instance.aquery(
             resolved_query,
             param=QueryParam(
