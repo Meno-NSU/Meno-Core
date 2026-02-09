@@ -46,6 +46,10 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="CLEAR_CACHE",
     )
+    local_files_only: bool = Field(
+        default=False,
+        validation_alias="LOCAL_FILES_ONLY",
+    )
 
     # LINKS
     enable_links_addition: bool = Field(

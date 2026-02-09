@@ -550,24 +550,28 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         logger.info(f"Loading tokenizer and embedder model: {LOCAL_EMBEDDER_PATH}...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
             LOCAL_EMBEDDER_PATH,
+            local_files_only=settings.local_files_only
         )
         emb_model = AutoModel.from_pretrained(
             str(LOCAL_EMBEDDER_PATH),
             trust_remote_code=True,
             # device_map='cuda:0'
             device_map='cpu',
+            local_files_only=settings.local_files_only
         )
         emb_model.eval()
         logger.info(f"Model {LOCAL_EMBEDDER_PATH} loaded successfully")
 
         logger.info(f"Loading tokenizer and reranker model: {LOCAL_RERANKER_PATH}...")
         reranker_tokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_RERANKER_PATH
+            LOCAL_RERANKER_PATH,
+            local_files_only=settings.local_files_only
         )
         reranker_model = AutoModelForSequenceClassification.from_pretrained(
             str(LOCAL_RERANKER_PATH),
             trust_remote_code=True,
             device_map='cpu',
+            local_files_only=settings.local_files_only
         )
         reranker_model.eval()
         logger.info(f"Reranker {LOCAL_RERANKER_PATH} loaded successfully")
@@ -611,7 +615,8 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         await rag.initialize_storages()
         logger.info("RAG system initialized successfully")
         token_cls = AutoModelForTokenClassification.from_pretrained(
-            str(LOCAL_EMBEDDER_PATH), trust_remote_code=True, device_map='cpu'
+            str(LOCAL_EMBEDDER_PATH), trust_remote_code=True, device_map='cpu',
+            local_files_only=settings.local_files_only
         )
         token_cls.eval()
         embedder: GTEEmbedding = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
