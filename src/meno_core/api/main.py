@@ -270,7 +270,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         if settings.clear_cache:
             await rag_instance.aclear_cache()
             logger.info("LightRAG cache cleared successfully")
-        return await rag_instance.aquery(
+        ans = await rag_instance.aquery(
             resolved_query,
             param=QueryParam(
                 mode=QUERY_MODE,
@@ -285,6 +285,8 @@ async def chat_completions(request: OAIChatCompletionsRequest):
             ),
             system_prompt=formatted_system_prompt
         )
+        logger.info(f"LightRAG answer: ```\n{ans}\n```")
+        return ans
 
     if not request.stream:
         try:
@@ -296,6 +298,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                         chunks.append(str(part))
                 result = "".join(chunks)
             content = str(result)
+            logger.info(f"LightRAG answer after reconstruction: ```\n{content}\n```")
             # prompt_for_first_answer = await rag_instance.aquery(
             #     resolved_query,
             #     param=QueryParam(
