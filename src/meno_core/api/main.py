@@ -46,6 +46,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger: Logger = logging.getLogger(__name__)
+l_logger = logging.getLogger("lightrag")
+l_logger.setLevel(logging.DEBUG)
+l_logger.propagate = True
 
 try:
     collector: LogCollector = LogCollector()
@@ -99,7 +102,8 @@ async def lifespan(_: FastAPI):
     links_logger: Logger = setup_links_logger(
         LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
     )
-    setup_logger("light_rag_log", "DEBUG", False, str(settings.log_file_path))
+    setup_logger("light_rag_log", "DEBUG", False)
+    setup_logger("light_rag", "DEBUG", False)
     rag_instance, embedder, bm25, chunk_db = await initialize_rag()
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     if settings.enable_links_addition:
