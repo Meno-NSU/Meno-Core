@@ -46,6 +46,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger: Logger = logging.getLogger(__name__)
+logging.getLogger("lightrag").setLevel(logging.DEBUG)
 
 try:
     collector: LogCollector = LogCollector()
@@ -293,6 +294,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         try:
             result = await run_lightrag()
             if hasattr(result, "__aiter__"):
+                logger.info("Found chunks in result")
                 chunks = []
                 async for part in result:
                     if part:
