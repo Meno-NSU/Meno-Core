@@ -270,6 +270,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         if settings.clear_cache:
             await rag_instance.aclear_cache()
             logger.info("LightRAG cache cleared successfully")
+        logger.info(f"Running lightrag with query: ```\n{resolved_query}\n```\nhistory: ```\n{history}\n```")
         ans = await rag_instance.aquery(
             resolved_query,
             param=QueryParam(
@@ -564,6 +565,22 @@ async def set_ip(ip: str):
     return {
         "ip": settings.openai_base_url,
         "old_ip": old_ip
+    }
+
+
+@app.get("/settings")
+async def get_settings():
+    return {name: str(value) for name, value in settings.__dict__.items()}
+
+
+@app.post("/settings")
+async def set_setting(name: str, value: str):
+    old = getattr(settings, name, None)
+    setattr(settings, name, value)
+    return {
+        "name": name,
+        "value": value,
+        "old": old
     }
 
 
