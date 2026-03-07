@@ -114,7 +114,6 @@ async def lifespan(_: FastAPI):
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     if scheduler is not None:
-        pass
         scheduler.start()
         logger.info("⏰ Cache-clearing scheduler started")
     try:
@@ -139,7 +138,7 @@ def create_app() -> FastAPI:
     new_app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
