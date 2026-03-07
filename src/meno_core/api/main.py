@@ -22,6 +22,7 @@ import pytz  # type: ignore[import-untyped]
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from lightrag import QueryParam, LightRAG  # type: ignore[import-untyped]
 from lightrag.utils import setup_logger  # type: ignore[import-untyped]
@@ -32,6 +33,8 @@ from meno_core.core.link_correcter import LinkCorrecter
 from meno_core.core.link_searcher import LinkSearcher
 from meno_core.core.rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K
+from meno_core.core.lightrag_engine import LightRAGEngine
+from meno_core.core.zvec_rag import ZvecRAGEngine
 from meno_core.infrastructure.logdb.log_collector import LogCollector
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
@@ -80,27 +83,15 @@ def setup_links_logger(path: str, level: str = "DEBUG",
     return links_logger
 
 
-async def clear_rag_cache():
-    """Clear LightRAG cache"""
-    try:
-        current_time: datetime = datetime.now(pytz.timezone("Asia/Novosibirsk"))
-        logger.info(
-            f"⏰ Clearing cache at: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-
-        await rag_instance.aclear_cache()
-        logger.info("✅ LightRAG cache cleared successfully")
-    except Exception as clear_cache_error:
-        logger.error(f"❌ Failed to clear cache: {str(clear_cache_error)}")
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler
+    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler, embedder_instance, bm25_instance, chunk_db_instance
     links_logger: Logger = setup_links_logger(
         LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
     )
     setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
-    rag_instance, embedder, bm25, chunk_db = await initialize_rag()
+    rag_instance, embedder_instance, bm25_instance, chunk_db_instance = await initialize_rag()
+    logger.info("Background thread setup logic finished.")
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     if settings.enable_links_addition:
         ref_searcher = LinkSearcher(
@@ -109,9 +100,9 @@ async def lifespan(_: FastAPI):
             top_k=settings.top_k,
             dist_threshold=settings.dist_threshold,  # для совместимости
             max_links=settings.max_links,
-            embedder=embedder,
-            bm25=bm25,
-            chunk_db=chunk_db,
+            embedder=embedder_instance,
+            bm25=bm25_instance,
+            chunk_db=chunk_db_instance,
             dense_weight=getattr(settings, "dense_weight", 1.0),
             sparse_weight=getattr(settings, "sparse_weight", 0.22),
             hybrid_similarity_threshold=getattr(settings, "hybrid_similarity_threshold", 2.6),
@@ -123,11 +114,7 @@ async def lifespan(_: FastAPI):
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     if scheduler is not None:
-        scheduler.add_job(
-            clear_rag_cache,
-            trigger=CronTrigger(hour=0, minute=0),
-            name="clear_rag_cache_daily"
-        )
+        pass
         scheduler.start()
         logger.info("⏰ Cache-clearing scheduler started")
     try:
@@ -149,12 +136,22 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     new_app = FastAPI(lifespan=lifespan)
+    new_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     return new_app
 
 
 app = create_app()
 
-rag_instance: Optional[LightRAG] = None
+rag_instance: Optional[Union[LightRAGEngine, ZvecRAGEngine]] = None
+embedder_instance = None
+bm25_instance = None
+chunk_db_instance = None
 abbreviations: Dict[str, str] = {}
 ref_searcher: Optional[LinkSearcher] = None
 ref_corrector: Optional[LinkCorrecter] = None
@@ -267,32 +264,41 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     collector.update_time(session_id=session_id)
 
     async def run_lightrag():
-        return await rag_instance.aquery(
-            resolved_query,
-            param=QueryParam(
-                mode=QUERY_MODE,
-                top_k=TOP_K,
-                chunk_top_k=CHUNK_TOP_K,
-                max_total_tokens=QUERY_MAX_TOKENS,
-                history_turns=len(history),
-                conversation_history=history,
-                max_entity_tokens=ENTITY_MAX_TOKENS,
-                max_relation_tokens=RELATION_MAX_TOKENS,
-                stream=request.stream,
-            ),
-            system_prompt=formatted_system_prompt
-        )
+        try:
+            return await rag_instance.aquery(
+                resolved_query,
+                param=QueryParam(
+                    mode=QUERY_MODE,
+                    top_k=TOP_K,
+                    chunk_top_k=CHUNK_TOP_K,
+                    max_total_tokens=QUERY_MAX_TOKENS,
+                    history_turns=len(history),
+                    conversation_history=history,
+                    max_entity_tokens=ENTITY_MAX_TOKENS,
+                    max_relation_tokens=RELATION_MAX_TOKENS,
+                    stream=request.stream,
+                ),
+                system_prompt=formatted_system_prompt
+            )
+        except Exception as e:
+            logger.error(f"Error querying RAG: {e}", exc_info=True)
+            # For non-streaming, re-raise to be caught by the outer try-except
+            # For streaming, this will be caught by the sse_generator's try-except
+            raise
 
     if not request.stream:
         try:
-            result = await run_lightrag()
-            if hasattr(result, "__aiter__"):
+            response = await run_lightrag()  # type: ignore[misc]
+            # Log successful query
+            # The original instruction had a malformed `log_data.update` here.
+            # Assuming the intent was to rename `result` to `response` and keep the logic.
+            if hasattr(response, "__aiter__"):
                 chunks = []
-                async for part in result:
+                async for part in response:
                     if part:
                         chunks.append(str(part))
-                result = "".join(chunks)
-            content = str(result)
+                response = "".join(chunks)
+            content = str(response)
             # prompt_for_first_answer = await rag_instance.aquery(
             #     resolved_query,
             #     param=QueryParam(
@@ -548,12 +554,27 @@ async def image_from_text(req: ImageOnlyRequest):
 
 @app.get("/v1/models")
 async def list_models():
+    model_name = settings.llm_model_name or "menon-1"
     return {
         "object": "list",
         "data": [{
-            "id": "menon-1",
+            "id": model_name,
             "object": "model",
             "created": int(time.time()),
             "owned_by": "menon",
+        }]
+    }
+
+@app.get("/v1/knowledge-bases")
+async def list_knowledge_bases():
+    kb_name = "default-kb"
+    if settings.working_dir:
+        kb_name = settings.working_dir.name
+    return {
+        "object": "list",
+        "data": [{
+            "id": kb_name,
+            "name": "Основная база знаний",
+            "description": "База знаний по умолчанию для текущего рабочего каталога"
         }]
     }

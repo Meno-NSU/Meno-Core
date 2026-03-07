@@ -11,11 +11,11 @@ from pathlib import Path
 from re import Match, Pattern
 from typing import Any, Optional, List, Union
 
-import numpy as np
+import numpy as np  # type: ignore[import]
 # third-party imports without stubs - mark them to silence mypy import-untyped
 import pytz  # type: ignore[import]
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # type: ignore[import]
 from lightrag import LightRAG  # type: ignore[import]
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data  # type: ignore[import]
 from lightrag.llm.openai import openai_complete_if_cache  # type: ignore[import]
@@ -24,8 +24,8 @@ from nltk import wordpunct_tokenize  # type: ignore[import]
 from nltk.stem.snowball import SnowballStemmer  # type: ignore[import]
 from rank_bm25 import BM25Okapi  # type: ignore[import]
 from torch import Tensor
-from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification  # type: ignore[import]
+from transformers import AutoTokenizer, AutoModel  # type: ignore[import]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
@@ -40,7 +40,7 @@ ENTITY_MAX_TOKENS: int = settings.entity_max_tokens
 RELATION_MAX_TOKENS: int = settings.relation_max_tokens
 TOP_K: int = settings.top_k
 CHUNK_TOP_K: int = settings.chunk_top_k
-WORKING_DIR: Path | None = settings.working_dir
+WORKING_DIR: Path = Path(settings.working_dir) if settings.working_dir else Path("./tmp_working_dir")
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(str(WORKING_DIR))}')
 ABBREVIATIONS_PATH: Path | None = settings.abbreviations_path
 print(f'os.path.isfile({ABBREVIATIONS_PATH}) = {os.path.isfile(str(ABBREVIATIONS_PATH))}')
@@ -569,30 +569,32 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
     """
     try:
         logger.info("Initializing RAG system...")
-        logger.info(f"Loading tokenizer and embedder model: {LOCAL_EMBEDDER_PATH}...")
+        embedder_path = str(LOCAL_EMBEDDER_PATH) if LOCAL_EMBEDDER_PATH else "Alibaba-NLP/gte-multilingual-base"
+        logger.info(f"Loading tokenizer and embedder model: {embedder_path}...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_EMBEDDER_PATH,
+            embedder_path,
         )
         emb_model = AutoModel.from_pretrained(
-            str(LOCAL_EMBEDDER_PATH),
+            embedder_path,
             trust_remote_code=True,
             # device_map='cuda:0'
             device_map='cpu',
         )
         emb_model.eval()
-        logger.info(f"Model {LOCAL_EMBEDDER_PATH} loaded successfully")
+        logger.info(f"Model {embedder_path} loaded successfully")
 
-        logger.info(f"Loading tokenizer and reranker model: {LOCAL_RERANKER_PATH}...")
+        reranker_path = str(LOCAL_RERANKER_PATH) if LOCAL_RERANKER_PATH else "Alibaba-NLP/gte-multilingual-reranker-base"
+        logger.info(f"Loading tokenizer and reranker model: {reranker_path}...")
         reranker_tokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_RERANKER_PATH
+            reranker_path
         )
         reranker_model = AutoModelForSequenceClassification.from_pretrained(
-            str(LOCAL_RERANKER_PATH),
+            reranker_path,
             trust_remote_code=True,
             device_map='cpu',
         )
         reranker_model.eval()
-        logger.info(f"Reranker {LOCAL_RERANKER_PATH} loaded successfully")
+        logger.info(f"Reranker {reranker_path} loaded successfully")
 
         global _reranker_tokenizer, _reranker_model
         _reranker_tokenizer = reranker_tokenizer
@@ -601,6 +603,31 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         logger.info("Initializing shared data and pipeline status...")
         initialize_share_data()
         await initialize_pipeline_status()
+        
+        token_cls = AutoModelForTokenClassification.from_pretrained(
+            embedder_path, trust_remote_code=True, device_map='cuda' if torch.cuda.is_available() else 'cpu'
+        )
+        token_cls.eval()
+        embedder: GTEEmbedding = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
+
+        chunk_db, bm25 = await build_chunks_db_and_bm25(str(WORKING_DIR))
+        logger2: Logger = logging.getLogger("links")
+        logger2.debug("RAG init: chunks=%d", len(chunk_db))
+        try:
+            logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
+        except Exception:
+            pass
+
+        if settings.rag_engine_type == "zvec":
+            from meno_core.core.zvec_rag import ZvecRAGEngine
+            logger.info("Using ZVEC engine.")
+            engine = ZvecRAGEngine(
+                working_dir=str(WORKING_DIR),
+                embedder=embedder,
+                bm25=bm25,
+                chunk_db=chunk_db
+            )
+            return engine, embedder, bm25, chunk_db
 
         logger.info("Creating LightRAG instance...")
         rag: LightRAG = LightRAG(
@@ -627,21 +654,15 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         logger.info("Initializing RAG storages...")
         await rag.initialize_storages()
         logger.info("RAG system initialized successfully")
-        token_cls = AutoModelForTokenClassification.from_pretrained(
-            str(LOCAL_EMBEDDER_PATH), trust_remote_code=True, device_map='cpu'
+
+        from meno_core.core.lightrag_engine import LightRAGEngine
+        engine = LightRAGEngine(
+            rag_instance=rag,
+            embedder=embedder,
+            bm25=bm25,
+            chunk_db=chunk_db
         )
-        token_cls.eval()
-        embedder: GTEEmbedding = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
-
-        chunk_db, bm25 = await build_chunks_db_and_bm25(str(WORKING_DIR))
-        logger2: Logger = logging.getLogger("links")
-        logger2.debug("RAG init: chunks=%d", len(chunk_db))
-        try:
-            logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
-        except Exception:
-            pass
-
-        return rag, embedder, bm25, chunk_db
+        return engine, embedder, bm25, chunk_db
     except Exception as e:
         logger.error(f"Error initializing RAG: {str(e)}", exc_info=True)
         raise
@@ -701,6 +722,11 @@ async def build_chunks_db_and_bm25(working_dir: Union[str, Path]):
         working_dir_str = working_dir
 
     chunks_path = Path(working_dir_str) / "kv_store_text_chunks.json"
+    if not chunks_path.exists():
+        logger.warning(f"Chunk database not found at {chunks_path}. Initializing empty.")
+        from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
+        return {}, BM25Okapi([["dummy"]])
+
     with chunks_path.open("r", encoding="utf-8") as fp:
         raw = json.load(fp)
     # [(content, full_doc_id)]

@@ -16,8 +16,11 @@ class LinkCorrecter:
     def __init__(self, urls_path: Path | str, dist_threshold: float):
         urls_path = Path(urls_path)
         self.dist_threshold = dist_threshold
-        with urls_path.open(mode='r', encoding='utf-8') as fp:
-            self.urls = set(json.load(fp).values())
+        try:
+            with urls_path.open(mode='r', encoding='utf-8') as fp:
+                self.valid_urls: list[str] = list(json.load(fp).values())
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.valid_urls: list[str] = []
 
     def find_closest_link(
         self,
