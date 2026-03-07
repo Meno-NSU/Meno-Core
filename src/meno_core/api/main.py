@@ -17,13 +17,11 @@ from pathlib import Path
 from typing import List, Dict, Optional, Union, AsyncIterator, Any
 from typing import Literal, Tuple
 
-import pytz  # type: ignore[import-untyped]
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
-from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from lightrag import QueryParam, LightRAG  # type: ignore[import-untyped]
+from lightrag import QueryParam  # type: ignore[import-untyped]
 from lightrag.utils import setup_logger  # type: ignore[import-untyped]
 from pydantic import BaseModel
 

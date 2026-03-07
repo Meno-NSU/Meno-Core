@@ -14,14 +14,13 @@ from meno_core.core.rag_engine import (
     _reranker_tokenizer,
     _reranker_model,
 )
-
-logger = logging.getLogger(__name__)
-
 from meno_core.core.prompts import (
     SEARCH_SYSTEM_PROMPT,
     MEANINGLESS_REQUEST_ANSWER,
     EXAMPLES_OF_SEARCH_QUERIES,
 )
+
+logger = logging.getLogger(__name__)
 
 LEXICAL_DISTANCE_THRESHOLD: float = 0.05
 MAX_NUMBER_OF_ANSWER_VARIANTS: int = 3

@@ -29,6 +29,11 @@ from transformers import AutoTokenizer, AutoModel  # type: ignore[import]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.prompts import (
+    TEMPLATE_FOR_ABBREVIATION_EXPLAINING,
+    SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
+    FEW_SHOTS_FOR_ANAPHORA,
+)
 
 _reranker_tokenizer = None
 _reranker_model = None
@@ -56,11 +61,6 @@ print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(str(LOCAL_EMBEDDER
 
 THINK_END_TOKEN = '</think>'
 
-from meno_core.core.prompts import (
-    TEMPLATE_FOR_ABBREVIATION_EXPLAINING,
-    SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
-    FEW_SHOTS_FOR_ANAPHORA,
-)
 
 logger: Logger = logging.getLogger(__name__)
 
