@@ -238,6 +238,29 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
     model_id: str = request.model or "menon-1"
+
+    if vllm_registry is not None:
+        if not await vllm_registry.is_valid_model(model_id):
+            available_models = [m["id"] for m in await vllm_registry.list_models()]
+            logger.warning(
+                "Rejected request for unknown model '%s'. Available: %s",
+                model_id, available_models,
+            )
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": (
+                            f"Model '{model_id}' is not available on this vLLM endpoint. "
+                            f"Available models: {available_models}"
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "model_not_found",
+                        "param": "model",
+                    }
+                },
+            )
+
     # Set the model override so rag_engine LLM calls use the UI-selected model
     _current_model_override.set(model_id)
     session_id: str = request.user or f"session-{completion_id}"

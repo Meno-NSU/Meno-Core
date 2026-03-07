@@ -91,6 +91,15 @@ class VLLMRegistry:
         """Force-refresh the cache and return fresh data."""
         return await self.discover()
 
+    async def is_valid_model(self, model_id: str) -> bool:
+        """Return True only if *model_id* is present in the known vLLM model list.
+
+        Uses the auto-refreshing cache so no extra network round-trip is made
+        when the cache is still fresh.
+        """
+        models = await self.list_models()
+        return any(m["id"] == model_id for m in models)
+
     def lookup_endpoint(self, model_id: str) -> Optional[str]:
         """Return the base URL for *model_id*, or ``None`` if not found."""
         for m in self._cache:
