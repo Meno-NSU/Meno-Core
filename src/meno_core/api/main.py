@@ -30,7 +30,8 @@ from meno_core.core.lightrag_engine import LightRAGEngine
 from meno_core.core.link_correcter import LinkCorrecter
 from meno_core.core.link_searcher import LinkSearcher
 from meno_core.core.rag_engine import initialize_rag, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K
+    explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K, \
+    _current_model_override
 from meno_core.core.prompts import SYSTEM_PROMPT_FOR_MENO
 from meno_core.core.vllm_registry import VLLMRegistry
 from meno_core.core.zvec_rag import ZvecRAGEngine
@@ -237,6 +238,8 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
     model_id: str = request.model or "menon-1"
+    # Set the model override so rag_engine LLM calls use the UI-selected model
+    _current_model_override.set(model_id)
     session_id: str = request.user or f"session-{completion_id}"
 
     try:

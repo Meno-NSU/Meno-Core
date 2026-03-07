@@ -1,3 +1,4 @@
+import contextvars
 import json
 import logging
 import math
@@ -60,6 +61,13 @@ DEFAULT_HALLUCINATION_THRESHOLD: float = 0.3
 print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(str(LOCAL_EMBEDDER_PATH))}')
 
 THINK_END_TOKEN = '</think>'
+
+# ── Model override via contextvars ──
+# Set by chat_completions handler so llm_model_func uses the model
+# chosen by the user in the UI, not the hardcoded settings value.
+_current_model_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    '_current_model_override', default=None
+)
 
 
 logger: Logger = logging.getLogger(__name__)
@@ -146,8 +154,9 @@ async def llm_model_func(prompt: str,
     """
     if history_messages is None:
         history_messages = []
+    effective_model = _current_model_override.get() or settings.llm_model_name
     try:
-        logger.info(f"Sending request to LLM with {len(history_messages)} messages, prompt: {prompt}")
+        logger.info(f"Sending request to LLM (model={effective_model}) with {len(history_messages)} messages, prompt: {prompt}")
         if not stream:
             answer: str = await generate_with_llm(
                 prompt=prompt,
@@ -161,7 +170,7 @@ async def llm_model_func(prompt: str,
             return answer
 
         result = await openai_complete_if_cache(
-            model=settings.llm_model_name,
+            model=effective_model,
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
@@ -195,13 +204,14 @@ async def generate_with_llm(
 ) -> str:
     if history_messages is None:
         history_messages = []
+    effective_model = _current_model_override.get() or settings.llm_model_name
 
     kwargs.pop("stream", None)
 
     kwargs.pop("enable_cot", None)
 
     result = await openai_complete_if_cache(
-        model=settings.llm_model_name,
+        model=effective_model,
         prompt=prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
