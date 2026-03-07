@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 from lightrag import LightRAG
 from rank_bm25 import BM25Okapi
 from functools import partial
