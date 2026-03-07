@@ -22,6 +22,7 @@ import pytz  # type: ignore[import-untyped]
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi.responses import JSONResponse, StreamingResponse
 from lightrag import QueryParam, LightRAG  # type: ignore[import-untyped]
@@ -135,6 +136,13 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     new_app = FastAPI(lifespan=lifespan)
+    new_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     return new_app
 
 
