@@ -659,7 +659,6 @@ async def build_chunks_db_and_bm25(working_dir: Union[str, Path]):
     chunks_path = Path(working_dir_str) / "kv_store_text_chunks.json"
     if not chunks_path.exists():
         logger.warning(f"Chunk database not found at {chunks_path}. Initializing empty.")
-        from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
         return {}, BM25Okapi([["dummy"]])
 
     with chunks_path.open("r", encoding="utf-8") as fp:
