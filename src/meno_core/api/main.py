@@ -132,6 +132,21 @@ async def lifespan(_: FastAPI):
             models = await vllm_registry.discover()
             logger.info("🔍 Discovered %d model(s) across %d vLLM endpoint(s)",
                         len(models), len(settings.vllm_endpoints))
+            if models:
+                available_ids = [m["id"] for m in models]
+                # Verify the configured model name actually exists on the endpoint.
+                # If it is missing (or not set at all), fall back to the first real model.
+                if settings.llm_model_name not in available_ids:
+                    resolved = available_ids[0]
+                    logger.warning(
+                        "⚠️  LLM_MODEL_NAME='%s' is not available on vLLM "
+                        "(available: %s). Overriding with '%s'.",
+                        settings.llm_model_name, available_ids, resolved,
+                    )
+                    settings.llm_model_name = resolved
+                else:
+                    logger.info("✅ Configured model '%s' confirmed on vLLM.",
+                                settings.llm_model_name)
         except Exception as vllm_err:
             logger.warning("vLLM discovery failed at startup: %s", vllm_err)
     else:
