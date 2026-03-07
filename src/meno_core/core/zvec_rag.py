@@ -8,16 +8,16 @@ from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.prompts import (
+    SEARCH_SYSTEM_PROMPT,
+    MEANINGLESS_REQUEST_ANSWER,
+    EXAMPLES_OF_SEARCH_QUERIES,
+)
 from meno_core.core.rag_engine import (
     generate_with_llm,
     _snow,
     _reranker_tokenizer,
     _reranker_model,
-)
-from meno_core.core.prompts import (
-    SEARCH_SYSTEM_PROMPT,
-    MEANINGLESS_REQUEST_ANSWER,
-    EXAMPLES_OF_SEARCH_QUERIES,
 )
 
 logger = logging.getLogger(__name__)
