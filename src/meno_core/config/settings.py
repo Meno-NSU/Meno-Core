@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     )
     abbreviations_path: Optional[Path] = Field(
         default=None,
-        validation_alias="ABBREVIATIONS_PATH",
+        validation_alias=AliasChoices("ABBREVIATIONS_PATH", "ABBREVIATIONS_FILE"),
     )
     rag_engine_type: Literal["lightrag", "zvec"] = Field(
         default="lightrag",
