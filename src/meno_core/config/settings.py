@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import Field, AliasChoices, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -96,21 +96,10 @@ class Settings(BaseSettings):
         validation_alias="LOG_FILE_PATH",
     )
 
-    # vLLM
-    vllm_endpoints: List[str] = Field(
-        default_factory=list,
+    vllm_endpoints: str = Field(
+        default="",
         validation_alias="VLLM_ENDPOINTS",
     )
-
-    @field_validator("vllm_endpoints", mode="before")
-    @classmethod
-    def _parse_vllm_endpoints(cls, v: object) -> List[str]:
-        """Accept both JSON list and comma-separated string."""
-        if isinstance(v, str):
-            return [ep.strip() for ep in v.split(",") if ep.strip()]
-        if isinstance(v, list):
-            return [str(ep).strip() for ep in v if str(ep).strip()]
-        return []
 
     model_config = SettingsConfigDict(
         env_file=".env",

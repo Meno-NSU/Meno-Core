@@ -125,13 +125,13 @@ async def lifespan(_: FastAPI):
     except Exception as load_abbreviations_error:
         logger.exception("Unable to load abbreviations", exc_info=load_abbreviations_error)
 
-    # ── vLLM model discovery ──
-    if settings.vllm_endpoints:
-        vllm_registry = VLLMRegistry(settings.vllm_endpoints)
+    _vllm_endpoint_list = [ep.strip() for ep in settings.vllm_endpoints.split(",") if ep.strip()]
+    if _vllm_endpoint_list:
+        vllm_registry = VLLMRegistry(_vllm_endpoint_list)
         try:
             models = await vllm_registry.discover()
             logger.info("🔍 Discovered %d model(s) across %d vLLM endpoint(s)",
-                        len(models), len(settings.vllm_endpoints))
+                        len(models), len(_vllm_endpoint_list))
             if models:
                 available_ids = [m["id"] for m in models]
                 # Verify the configured model name actually exists on the endpoint.
