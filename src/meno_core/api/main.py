@@ -135,13 +135,33 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     new_app = FastAPI(lifespan=lifespan)
+
+    from fastapi import Request
+    @new_app.middleware("http")
+    async def log_requests(request: Request, call_next):
+        logger.info(f"Incoming Request: {request.method} {request.url} from {request.client}")
+        logger.debug(f"Headers: {request.headers}")
+        start_time = time.time()
+        try:
+            response = await call_next(request)
+            process_time = time.time() - start_time
+            logger.info(f"Completed Request: {request.method} {request.url} | Status: {response.status_code} | Time: {process_time:.4f}s")
+            return response
+        except Exception as e:
+            logger.exception(f"Exception during request: {request.method} {request.url}")
+            raise
+
+    # CORS middleware must be added AFTER the http middleware above,
+    # because Starlette processes middleware in LIFO order (last added = first executed).
+    # This ensures CORS preflight (OPTIONS) requests are handled before reaching log_requests.
     new_app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
     return new_app
 
 

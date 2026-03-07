@@ -46,12 +46,12 @@ Configuration
 
 Running the backend
 - Using uvicorn directly:
-  - From the project root: `uv run uvicorn meno_core.api.main:app --host 127.0.0.1 --port 8888`
+  - From the project root: `uv run uvicorn meno_core.api.main:app --host 0.0.0.0 --port 9006`
 - Or using the helper script:
   - From the project root: `bash scripts/run_backend.sh`
 
 Basic usage
-- Base URL: `http://127.0.0.1:8888`
+- Base URL: `http://127.0.0.1:9006`
 - Endpoint: `POST /v1/chat/completions`
 - Request body (simplified):
   - `model`: string
