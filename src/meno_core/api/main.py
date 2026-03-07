@@ -35,6 +35,7 @@ from meno_core.core.link_searcher import LinkSearcher
 from meno_core.core.rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K
 from meno_core.core.lightrag_engine import LightRAGEngine
+from meno_core.core.vllm_registry import VLLMRegistry
 from meno_core.core.zvec_rag import ZvecRAGEngine
 from meno_core.infrastructure.logdb.log_collector import LogCollector
 
@@ -86,7 +87,7 @@ def setup_links_logger(path: str, level: str = "DEBUG",
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler, embedder_instance, bm25_instance, chunk_db_instance
+    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler, embedder_instance, bm25_instance, chunk_db_instance, vllm_registry
     links_logger: Logger = setup_links_logger(
         LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
     )
@@ -126,6 +127,18 @@ async def lifespan(_: FastAPI):
     except Exception as load_abbreviations_error:
         logger.exception("Unable to load abbreviations", exc_info=load_abbreviations_error)
 
+    # ── vLLM model discovery ──
+    if settings.vllm_endpoints:
+        vllm_registry = VLLMRegistry(settings.vllm_endpoints)
+        try:
+            models = await vllm_registry.discover()
+            logger.info("🔍 Discovered %d model(s) across %d vLLM endpoint(s)",
+                        len(models), len(settings.vllm_endpoints))
+        except Exception as vllm_err:
+            logger.warning("vLLM discovery failed at startup: %s", vllm_err)
+    else:
+        logger.info("No VLLM_ENDPOINTS configured — model list will use fallback")
+
     yield  # <-- здесь FastAPI продолжает работу
     # Здесь можно вызвать await rag_instance.cleanup(), если нужно
     # Shutdown scheduler on app exit
@@ -156,6 +169,7 @@ abbreviations: Dict[str, str] = {}
 ref_searcher: Optional[LinkSearcher] = None
 ref_corrector: Optional[LinkCorrecter] = None
 scheduler: Optional[AsyncIOScheduler] = None
+vllm_registry: Optional[VLLMRegistry] = None
 
 
 class ResetRequest(BaseModel):
@@ -554,6 +568,11 @@ async def image_from_text(req: ImageOnlyRequest):
 
 @app.get("/v1/models")
 async def list_models():
+    if vllm_registry is not None:
+        models = await vllm_registry.list_models()
+        if models:
+            return {"object": "list", "data": models}
+    # Fallback: return the single configured model
     model_name = settings.llm_model_name or "menon-1"
     return {
         "object": "list",
@@ -564,6 +583,18 @@ async def list_models():
             "owned_by": "menon",
         }]
     }
+
+
+@app.post("/v1/models/refresh")
+async def refresh_models():
+    if vllm_registry is None:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No VLLM_ENDPOINTS configured"},
+        )
+    models = await vllm_registry.refresh()
+    logger.info("🔄 Models refreshed: %d model(s) found", len(models))
+    return {"object": "list", "data": models}
 
 @app.get("/v1/knowledge-bases")
 async def list_knowledge_bases():
