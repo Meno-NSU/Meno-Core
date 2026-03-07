@@ -23,9 +23,9 @@ class LinkCorrecter:
             self.valid_urls: list[str] = []
 
     def find_closest_link(
-        self,
-        url: str,
-        scorer=Levenshtein.normalized_similarity
+            self,
+            url: str,
+            scorer=Levenshtein.normalized_similarity
     ) -> Optional[Tuple[str, float]]:
         """
         Finds the best matching URL from a set of valid links.
@@ -40,7 +40,7 @@ class LinkCorrecter:
             A tuple containing the best matching URL and its similarity score (0-1),
             or None if the link_set is empty.
         """
-        
+
         # extractOne returns the best match in the format (choice, score, index)
         # The score is a similarity score from 0-100, so we divide by 100.
         result = extractOne(url, self.urls, scorer=scorer)
@@ -50,8 +50,8 @@ class LinkCorrecter:
         return None
 
     async def replace_markdown_links(
-        self,
-        text: str,
+            self,
+            text: str,
     ) -> str:
         """
         Finds all Markdown-style links in a text, validates them against a set of
@@ -95,13 +95,14 @@ class LinkCorrecter:
                 best_url, score = closest_match
                 # print(f"Replacing '{url}' with '{best_url}' (Similarity: {score:.2f})")
                 return f'[{label}]({best_url})'
-            
+
             # Case 4: No close match was found.
             else:
                 # print(f"No close match for '{url}'. Removing URL.")
                 return label
 
         return markdown_link_pattern.sub(replacer, text)
+
 
 # --- Example Usage ---
 if __name__ == "__main__":
@@ -143,7 +144,7 @@ if __name__ == "__main__":
     print(document_text)
     print("\n--- Processed Document ---")
     print(processed_text)
-    
+
     # --- Example with a lower threshold ---
     corr = LinkCorrecter("../../../resources/validated_urls.json", dist_threshold=0.1)
     print("\n\n--- Processing with lower threshold (0.7) ---")
@@ -152,4 +153,3 @@ if __name__ == "__main__":
     )
     print("\n--- Processed Document (Low Threshold) ---")
     print(processed_text_low_thresh)
-

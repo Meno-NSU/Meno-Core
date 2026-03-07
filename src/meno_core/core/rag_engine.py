@@ -57,7 +57,6 @@ print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(str(LOCAL_EMBEDDER
 THINK_END_TOKEN = '</think>'
 
 from meno_core.core.prompts import (
-    SYSTEM_PROMPT_FOR_MENO,
     TEMPLATE_FOR_ABBREVIATION_EXPLAINING,
     SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
     FEW_SHOTS_FOR_ANAPHORA,
@@ -508,7 +507,8 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         emb_model.eval()
         logger.info(f"Model {embedder_path} loaded successfully")
 
-        reranker_path = str(LOCAL_RERANKER_PATH) if LOCAL_RERANKER_PATH else "Alibaba-NLP/gte-multilingual-reranker-base"
+        reranker_path = str(
+            LOCAL_RERANKER_PATH) if LOCAL_RERANKER_PATH else "Alibaba-NLP/gte-multilingual-reranker-base"
         logger.info(f"Loading tokenizer and reranker model: {reranker_path}...")
         reranker_tokenizer = AutoTokenizer.from_pretrained(
             reranker_path
@@ -528,7 +528,7 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         logger.info("Initializing shared data and pipeline status...")
         initialize_share_data()
         await initialize_pipeline_status()
-        
+
         token_cls = AutoModelForTokenClassification.from_pretrained(
             embedder_path, trust_remote_code=True, device_map='cuda' if torch.cuda.is_available() else 'cpu'
         )

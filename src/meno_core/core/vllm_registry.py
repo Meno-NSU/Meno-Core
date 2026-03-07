@@ -21,11 +21,11 @@ class VLLMRegistry:
     """Aggregates model lists from one or more vLLM-compatible servers."""
 
     def __init__(
-        self,
-        endpoints: List[str],
-        *,
-        timeout: float = 5.0,
-        cache_ttl: float = 300.0,
+            self,
+            endpoints: List[str],
+            *,
+            timeout: float = 5.0,
+            cache_ttl: float = 300.0,
     ) -> None:
         """
         Args:
