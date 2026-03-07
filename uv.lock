@@ -922,6 +922,7 @@ dependencies = [
     { name = "torch" },
     { name = "transformers" },
     { name = "uvicorn" },
+    { name = "zvec" },
 ]
 
 [package.dev-dependencies]
@@ -958,6 +959,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.9.1" },
     { name = "transformers", specifier = ">=4.57.1" },
     { name = "uvicorn", specifier = ">=0.38.0" },
+    { name = "zvec", specifier = ">=0.2.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -2712,4 +2714,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f9/86/0f0dccb6e59a9e7f122c5afd43568b1d31b8ab7dda5f1b01fb5c7025c9a9/yarl-1.22.0-cp314-cp314t-win_amd64.whl", hash = "sha256:9fb17ea16e972c63d25d4a97f016d235c78dd2344820eb35bc034bc32012ee27", size = 96292, upload-time = "2025-10-06T14:12:15.398Z" },
     { url = "https://files.pythonhosted.org/packages/48/b7/503c98092fb3b344a179579f55814b613c1fbb1c23b3ec14a7b008a66a6e/yarl-1.22.0-cp314-cp314t-win_arm64.whl", hash = "sha256:9f6d73c1436b934e3f01df1e1b21ff765cd1d28c77dfb9ace207f746d4610ee1", size = 85171, upload-time = "2025-10-06T14:12:16.935Z" },
     { url = "https://files.pythonhosted.org/packages/73/ae/b48f95715333080afb75a4504487cbe142cae1268afc482d06692d605ae6/yarl-1.22.0-py3-none-any.whl", hash = "sha256:1380560bdba02b6b6c90de54133c81c9f2a453dee9912fe58c1dcced1edb7cff", size = 46814, upload-time = "2025-10-06T14:12:53.872Z" },
+]
+
+[[package]]
+name = "zvec"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/d3/4914de3a352ce8e3d176cb7fcb7d1bfa5d6a9bec56b31480bb7a77f8acb2/zvec-0.2.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:5a602477b48c31aadb470098f80f4bb5f5f17d8aa96be131fa7d7458367fd8c5", size = 12740381, upload-time = "2026-02-13T02:20:00.111Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/75/6d1878b22eea22eff0835bb3c3ba1a29d55d285265105cf53eaeb258fb56/zvec-0.2.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:1d84cd275b4fd5f70829a74f3b7a6907f8b633cf2bc7292a3eb7dbae2c0e1ca3", size = 18411239, upload-time = "2026-02-13T02:16:33.168Z" },
+    { url = "https://files.pythonhosted.org/packages/36/b1/775d04fa886616f47f859bd5f98a9c892e65ace52dd48d8b71e5d11eae00/zvec-0.2.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:4cbb6173a59e6fa09a7106eda819ce1088b6e13278739fb48919ea8294100267", size = 20389189, upload-time = "2026-02-13T03:35:47.942Z" },
 ]
