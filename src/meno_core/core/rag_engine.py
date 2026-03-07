@@ -546,7 +546,7 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         if settings.rag_engine_type == "zvec":
             from meno_core.core.zvec_rag import ZvecRAGEngine
             logger.info("Using ZVEC engine.")
-            engine = ZvecRAGEngine(
+            engine: Union["ZvecRAGEngine", "LightRAGEngine"] = ZvecRAGEngine(
                 working_dir=str(WORKING_DIR),
                 embedder=embedder,
                 bm25=bm25,

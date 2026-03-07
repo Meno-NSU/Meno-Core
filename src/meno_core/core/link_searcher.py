@@ -57,7 +57,7 @@ class LinkSearcher:
             self.logger.debug(f"LinkSearcher: Loaded {len(self.urls)} validated URLs")
         except (FileNotFoundError, json.JSONDecodeError):
             self.logger.warning(f"LinkSearcher: Error reading {urls_path}. Initializing with empty URL mapping.")
-            self.urls: dict[str, str] = {}
+            self.urls = {}
 
         # doc_id -> url (строим по заголовкам чанков)
         self.docid2url: dict[str, str] = {}

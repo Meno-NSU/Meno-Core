@@ -29,8 +29,9 @@ from meno_core.config.settings import settings
 from meno_core.core.lightrag_engine import LightRAGEngine
 from meno_core.core.link_correcter import LinkCorrecter
 from meno_core.core.link_searcher import LinkSearcher
-from meno_core.core.rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
+from meno_core.core.rag_engine import initialize_rag, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
     explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K
+from meno_core.core.prompts import SYSTEM_PROMPT_FOR_MENO
 from meno_core.core.vllm_registry import VLLMRegistry
 from meno_core.core.zvec_rag import ZvecRAGEngine
 from meno_core.infrastructure.logdb.log_collector import LogCollector

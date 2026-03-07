@@ -1,8 +1,8 @@
 import logging
 from typing import Any
 
-from lightrag import LightRAG
-from rank_bm25 import BM25Okapi
+from lightrag import LightRAG  # type: ignore[import-untyped]
+from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
 from meno_core.core.gte_embedding import GTEEmbedding
 

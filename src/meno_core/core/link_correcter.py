@@ -20,7 +20,7 @@ class LinkCorrecter:
             with urls_path.open(mode='r', encoding='utf-8') as fp:
                 self.valid_urls: list[str] = list(json.load(fp).values())
         except (FileNotFoundError, json.JSONDecodeError):
-            self.valid_urls: list[str] = []
+            self.valid_urls = []
 
     def find_closest_link(
             self,
@@ -43,7 +43,7 @@ class LinkCorrecter:
 
         # extractOne returns the best match in the format (choice, score, index)
         # The score is a similarity score from 0-100, so we divide by 100.
-        result = extractOne(url, self.urls, scorer=scorer)
+        result = extractOne(url, self.valid_urls, scorer=scorer)
         if result:
             best_match, score, _ = result
             return best_match, score / 100.0
@@ -83,7 +83,7 @@ class LinkCorrecter:
             url = match.group(2)
 
             # Case 1: The link is already valid.
-            if url in self.urls:
+            if url in self.valid_urls:
                 return match.group(0)  # Return the original [label](url) string
 
             # Case 2: The link is not valid, find the closest match.

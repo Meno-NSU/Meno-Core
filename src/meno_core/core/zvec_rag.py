@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Dict, Union
 
 import zvec
-from rank_bm25 import BM25Okapi
+from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
@@ -116,7 +116,7 @@ class ZvecRAGEngine:
         logger.info(f"Generated search queries: {list_of_search_queries}")
 
         # Step 2: Retrieve chunks
-        union_of_relevant_indices = {}
+        union_of_relevant_indices: Dict[int, float] = {}
         top_k = getattr(param, 'chunk_top_k', settings.chunk_top_k) if param else settings.chunk_top_k
 
         for cur_search_query in list_of_search_queries + [query]:
