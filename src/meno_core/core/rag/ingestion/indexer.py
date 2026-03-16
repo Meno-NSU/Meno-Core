@@ -3,6 +3,7 @@ import logging
 import os
 import pickle
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
@@ -85,6 +86,40 @@ class Indexer:
 
         return current_manifest != self.expected_manifest()
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        minutes, remainder = divmod(int(seconds), 60)
+        if minutes < 60:
+            return f"{minutes}m {remainder}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes}m {remainder}s"
+
+    @staticmethod
+    def _resolve_embedder_device(embedder: DenseEmbedder) -> str:
+        model = getattr(embedder, "model", None)
+        if model is not None:
+            try:
+                return str(next(model.parameters()).device)
+            except Exception:
+                device = getattr(model, "device", None)
+                if device is not None:
+                    return str(device)
+
+        base_embedder = getattr(embedder, "base_embedder", None)
+        if base_embedder is not None:
+            model = getattr(base_embedder, "model", None)
+            if model is not None:
+                try:
+                    return str(next(model.parameters()).device)
+                except Exception:
+                    device = getattr(model, "device", None)
+                    if device is not None:
+                        return str(device)
+
+        return "unknown"
+
     async def build_index(self, chunks: List[Chunk], batch_size: int = 32):
         """
         Builds and saves the multi-vector Zvec indexes, the BM25 index, metadata store,
@@ -118,28 +153,65 @@ class Indexer:
             collections[source_name] = zvec.create_and_open(path=str(self.zvec_paths[source_name]), schema=schema)
 
         chunk_metadata_dict: dict[str, Any] = {}
+        total_chunks = len(chunks)
+        total_batches = (total_chunks + batch_size - 1) // batch_size if total_chunks else 0
+        progress_every = max(1, min(25, total_batches // 20 if total_batches >= 20 else 1))
+        indexing_started_at = time.perf_counter()
+        embedder_descriptions = ", ".join(
+            f"{source_name}(device={self._resolve_embedder_device(embedder)}, dim={embedder.dimension}, model={embedder.model_path})"
+            for source_name, embedder in self.dense_embedders.items()
+        )
 
-        logger.info("Encoding and inserting into Zvec in batches of %s...", batch_size)
-        for batch_start in range(0, len(chunks), batch_size):
+        logger.info(
+            "Encoding and inserting into Zvec in batches of %s. Total batches=%s. Dense embedders: %s",
+            batch_size,
+            total_batches,
+            embedder_descriptions,
+        )
+        for batch_idx, batch_start in enumerate(range(0, total_chunks, batch_size), start=1):
+            batch_started_at = time.perf_counter()
             batch_chunks = chunks[batch_start:batch_start + batch_size]
             dense_texts = [chunk.text_for_dense for chunk in batch_chunks]
             doc_ids = [str(batch_start + offset) for offset in range(len(batch_chunks))]
+            embedder_timings_ms: dict[str, float] = {}
 
             for source_name, embedder in self.dense_embedders.items():
+                embedder_started_at = time.perf_counter()
                 embeddings = embedder.encode_documents(dense_texts).detach().cpu().numpy().tolist()
                 docs = [
                     zvec.Doc(id=doc_id, vectors={"embedding": embeddings[offset]})
                     for offset, doc_id in enumerate(doc_ids)
                 ]
                 collections[source_name].insert(docs)
+                embedder_timings_ms[source_name] = round((time.perf_counter() - embedder_started_at) * 1000, 2)
 
             for offset, chunk in enumerate(batch_chunks):
                 chunk_metadata_dict[doc_ids[offset]] = chunk.model_dump()
 
+            processed_chunks = min(batch_start + len(batch_chunks), total_chunks)
+            elapsed_seconds = time.perf_counter() - indexing_started_at
+            chunks_per_second = processed_chunks / elapsed_seconds if elapsed_seconds > 0 else 0.0
+            remaining_chunks = max(total_chunks - processed_chunks, 0)
+            eta_seconds = remaining_chunks / chunks_per_second if chunks_per_second > 0 else 0.0
+            batch_elapsed_ms = round((time.perf_counter() - batch_started_at) * 1000, 2)
+
+            if batch_idx == 1 or batch_idx == total_batches or batch_idx % progress_every == 0:
+                logger.info(
+                    "Chunk-RAG indexing progress: batch %s/%s, chunks %s/%s, %.2f chunks/s, ETA %s, last_batch=%sms, embedder_ms=%s",
+                    batch_idx,
+                    total_batches,
+                    processed_chunks,
+                    total_chunks,
+                    chunks_per_second,
+                    self._format_duration(eta_seconds),
+                    batch_elapsed_ms,
+                    embedder_timings_ms,
+                )
+
             logger.debug(
                 "Inserted batch %s/%s into dense indexes",
-                batch_start // batch_size + 1,
-                (len(chunks) + batch_size - 1) // batch_size,
+                batch_idx,
+                total_batches,
             )
 
         with self.chunks_meta_path.open("w", encoding="utf-8") as fp:
@@ -148,7 +220,12 @@ class Indexer:
         with self.manifest_path.open("w", encoding="utf-8") as fp:
             json.dump(self.expected_manifest(), fp, ensure_ascii=False, indent=2)
 
-        logger.info("Indexing complete.")
+        logger.info(
+            "Indexing complete in %s. Metadata saved to %s, manifest saved to %s.",
+            self._format_duration(time.perf_counter() - indexing_started_at),
+            self.chunks_meta_path,
+            self.manifest_path,
+        )
 
     def load_indexes(self) -> Tuple[Dict[str, Any], BM25Okapi, dict, dict]:
         """
