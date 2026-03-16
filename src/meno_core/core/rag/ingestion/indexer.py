@@ -50,8 +50,6 @@ class Indexer:
         if self.zvec_path.exists():
             logger.info(f"Removing existing zvec index at {self.zvec_path} before re-building...")
             shutil.rmtree(self.zvec_path, ignore_errors=True)
-            
-        os.makedirs(self.zvec_path, exist_ok=True)
 
         # 2. Extract texts for BM25 and build it
         logger.info("Building BM25 index...")
