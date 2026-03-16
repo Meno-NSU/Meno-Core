@@ -66,9 +66,13 @@ class Settings(BaseSettings):
     )
 
     # CHUNK RAG
-    kv_store_text_chunks_path: Path = Field(
-        default=Path("resources/lightrag_kg_v3/kv_store_text_chunks.json"),
-        validation_alias="KV_STORE_TEXT_CHUNKS_PATH"
+    chunk_rag_corpus_path: Path = Field(
+        default=Path("resources/data/chunk_rag_corpus_512.jsonl"),
+        validation_alias="CHUNK_RAG_CORPUS_PATH"
+    )
+    chunk_rag_data_path: Path = Field(
+        default=Path("resources/chunk_rag_data"),
+        validation_alias="CHUNK_RAG_DATA_PATH"
     )
     chunk_rag_top_k_dense: int = Field(default=10, validation_alias="CHUNK_RAG_TOP_K_DENSE")
     chunk_rag_top_k_bm25: int = Field(default=10, validation_alias="CHUNK_RAG_TOP_K_BM25")
