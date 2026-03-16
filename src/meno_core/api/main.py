@@ -36,6 +36,7 @@ from meno_core.core.prompts import SYSTEM_PROMPT_FOR_MENO
 from meno_core.core.vllm_registry import VLLMRegistry
 from meno_core.core.zvec_rag import ZvecRAGEngine
 from meno_core.infrastructure.logdb.log_collector import LogCollector
+from meno_core.api.arena import arena_router
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
@@ -184,6 +185,7 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+app.include_router(arena_router)
 
 rag_instance: Optional[Union[LightRAGEngine, ZvecRAGEngine]] = None
 embedder_instance = None
