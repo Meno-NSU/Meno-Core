@@ -41,7 +41,16 @@ class Indexer:
         """
         logger.info(f"Starting indexing for {len(chunks)} chunks...")
 
-        # 1. Ensure directories exist
+        import shutil
+        import os
+
+        # 1. Ensure working directory exists, and clean up existing zvec path if it exists
+        # Zvec throws "path validate failed" if we use create_and_open on an existing path
+        os.makedirs(self.working_dir, exist_ok=True)
+        if self.zvec_path.exists():
+            logger.info(f"Removing existing zvec index at {self.zvec_path} before re-building...")
+            shutil.rmtree(self.zvec_path, ignore_errors=True)
+            
         os.makedirs(self.zvec_path, exist_ok=True)
 
         # 2. Extract texts for BM25 and build it
