@@ -85,12 +85,23 @@ def setup_links_logger(path: str, level: str = "DEBUG",
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler, embedder_instance, bm25_instance, chunk_db_instance, vllm_registry
+    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler, embedder_instance, bm25_instance, chunk_db_instance, vllm_registry, chunk_rag_orchestrator
     links_logger: Logger = setup_links_logger(
         LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
     )
     setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
     rag_instance, embedder_instance, bm25_instance, chunk_db_instance = await initialize_rag()
+    
+    from meno_core.core.rag.factory import build_chunk_rag_orchestrator
+    # We point to resources/chunk_rag_data where our init script builds the offline models
+    chunk_rag_data_path = Path("resources/chunk_rag_data")
+    chunk_rag_orchestrator = build_chunk_rag_orchestrator(
+        working_dir=chunk_rag_data_path,
+        embedder=embedder_instance
+    )
+    if chunk_rag_orchestrator:
+        logger.info("⚡ ChunkRAG mode enabled globally.")
+        
     logger.info("Background thread setup logic finished.")
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     if settings.enable_links_addition:
@@ -183,6 +194,7 @@ ref_searcher: Optional[LinkSearcher] = None
 ref_corrector: Optional[LinkCorrecter] = None
 scheduler: Optional[AsyncIOScheduler] = None
 vllm_registry: Optional[VLLMRegistry] = None
+chunk_rag_orchestrator = None
 
 
 class ResetRequest(BaseModel):
@@ -248,7 +260,7 @@ _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*}", re.MULTILINE)
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: OAIChatCompletionsRequest):
-    if rag_instance is None:
+    if rag_instance is None and chunk_rag_orchestrator is None:
         raise RuntimeError("RAG is not initialized.")
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
@@ -316,6 +328,21 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     collector.update_time(session_id=session_id)
 
     async def run_lightrag():
+        # Override to hook chunk RAG orchestrator if configured appropriately
+        if chunk_rag_orchestrator and settings.rag_engine_type == "zvec":
+            from meno_core.core.rag.models import RagRequest, RagMessage
+            logger.info("Routing query to new Chunk RAG Mode.")
+            
+            # Map history format
+            rag_msgs = []
+            for h in history:
+                rag_msgs.append(RagMessage(role=h["role"], text=h["content"]))
+                
+            chunk_req = RagRequest(question=resolved_query, history=rag_msgs, session_id=session_id)
+            response = await chunk_rag_orchestrator.answer(chunk_req)
+            return response.answer
+        
+        # Legacy callback
         try:
             return await rag_instance.aquery(
                 resolved_query,
