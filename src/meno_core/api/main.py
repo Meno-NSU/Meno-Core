@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
     from meno_core.core.rag.factory import build_chunk_rag_orchestrator
     # We point to resources/chunk_rag_data where our init script builds the offline models
     chunk_rag_data_path = Path("resources/chunk_rag_data")
-    chunk_rag_orchestrator = build_chunk_rag_orchestrator(
+    chunk_rag_orchestrator = await build_chunk_rag_orchestrator(
         working_dir=chunk_rag_data_path,
         embedder=embedder_instance
     )
@@ -232,6 +232,12 @@ class OAIChatCompletionsRequest(BaseModel):
     top_p: Optional[float] = None
     stop: Optional[Union[str, List[str]]] = None
     user: Optional[str] = None
+    knowledge_base: Optional[str] = None
+    knowledge_base_id: Optional[str] = None
+
+    model_config = {
+        "extra": "allow"
+    }
 
 
 async def _build_prompt_and_history(messages: List[OAIMsg]) -> Tuple[str, str, List[Dict[str, str]]]:
@@ -329,7 +335,19 @@ async def chat_completions(request: OAIChatCompletionsRequest):
 
     async def run_lightrag():
         # Override to hook chunk RAG orchestrator if configured appropriately
-        if chunk_rag_orchestrator and settings.rag_engine_type == "zvec":
+        # Or if the user explicitly selected this knowledge base
+        kb_id = getattr(request, "knowledge_base", None) or getattr(request, "knowledge_base_id", None)
+        req_extra = request.model_dump().get("knowledge_base") or request.model_dump().get("kb_id")
+        selected_kb = kb_id or req_extra
+        
+        should_use_chunk_rag = False
+        if chunk_rag_orchestrator:
+            if settings.rag_engine_type == "zvec":
+                should_use_chunk_rag = True
+            elif selected_kb == "chunk-rag-kb":
+                should_use_chunk_rag = True
+
+        if should_use_chunk_rag and chunk_rag_orchestrator:
             from meno_core.core.rag.models import RagRequest, RagMessage
             logger.info("Routing query to new Chunk RAG Mode.")
             
@@ -667,11 +685,21 @@ async def list_knowledge_bases():
     kb_name = "default-kb"
     if settings.working_dir:
         kb_name = settings.working_dir.name
+        
+    kbs = [{
+        "id": kb_name,
+        "name": "Основная база знаний (Граф)",
+        "description": "База знаний по умолчанию на основе графов знаний"
+    }]
+    
+    if chunk_rag_orchestrator is not None:
+        kbs.append({
+            "id": "chunk-rag-kb",
+            "name": "Прямой поиск по параграфам (Chunk RAG)",
+            "description": "Использует семантический (zvec) и лексический (BM25) поиск по точным параграфам."
+        })
+        
     return {
         "object": "list",
-        "data": [{
-            "id": kb_name,
-            "name": "Основная база знаний",
-            "description": "База знаний по умолчанию для текущего рабочего каталога"
-        }]
+        "data": kbs
     }
