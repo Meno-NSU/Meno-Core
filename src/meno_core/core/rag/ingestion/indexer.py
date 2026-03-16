@@ -117,14 +117,6 @@ class Indexer:
         with open(self.bm25_path, "rb") as f:
             bm25 = pickle.load(f)
 
-        schema = zvec.CollectionSchema(
-            name=self.zvec_collection_name,
-            vectors=zvec.VectorSchema(
-                "embedding",
-                zvec.DataType.VECTOR_FP32,
-                settings.embedder_dim
-            ),
-        )
-        zvec_collection = zvec.create_and_open(path=str(self.zvec_path), schema=schema)
+        zvec_collection = zvec.open(path=str(self.zvec_path))
 
         return zvec_collection, bm25, chunk_metadata_dict
