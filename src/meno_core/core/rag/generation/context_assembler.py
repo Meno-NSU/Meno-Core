@@ -1,24 +1,22 @@
 import logging
 from typing import List, Dict, Tuple
 
-from transformers import GPT2TokenizerFast  # type: ignore[import-untyped]
+import tiktoken  # type: ignore[import-untyped]
 
 from meno_core.core.rag.models import RetrievedChunk, RagSource
 
 logger = logging.getLogger(__name__)
 
-# Basic token estimator, can use Tiktoken as well depending on environment
-# We assume standard GPT-like token budgets for Qwen / similar models
 try:
-    _tokenizer = GPT2TokenizerFast.from_pretrained("Xenova/gpt-4")
+    _encoding = tiktoken.get_encoding("cl100k_base")
 except Exception:
-    _tokenizer = None
+    _encoding = None
 
 
 def estimate_tokens(text: str) -> int:
     """Estimated token count."""
-    if _tokenizer:
-        return len(_tokenizer.encode(text))
+    if _encoding is not None:
+        return len(_encoding.encode(text))
     return len(text.split()) * 2  # Naive fallback
 
 

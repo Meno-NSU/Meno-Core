@@ -3,11 +3,13 @@ from typing import List, Dict
 
 from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
-from meno_core.core.rag_engine import tokenize_and_normalize
+from meno_core.core.lexical_normalizer import tokenize_for_bm25
+from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.models import Chunk, RetrievedChunk
 from meno_core.core.rag.retrieval.base import BaseRetriever
 
 logger = logging.getLogger(__name__)
+retrieval_logger = logging.getLogger("chunk_rag.retrieval")
 
 
 class BM25LexicalRetriever(BaseRetriever):
@@ -18,10 +20,15 @@ class BM25LexicalRetriever(BaseRetriever):
     def __init__(
         self,
         bm25: BM25Okapi,
-        chunk_map: Dict[str, dict]
+        chunk_map: Dict[str, dict],
+        *,
+        debug_enabled: bool = False,
+        preview_k: int = 5,
     ):
         self.bm25 = bm25
         self.chunk_map = chunk_map
+        self.debug_enabled = debug_enabled
+        self.preview_k = preview_k
         # Build map back from sequential 0-N ids to doc strings if needed,
         # but indexing guaranteed keys in chunk_map are '0', '1', '2' ... corresponding to BM25 inserts.
         self.id_order = [str(i) for i in range(len(chunk_map))]
@@ -32,8 +39,7 @@ class BM25LexicalRetriever(BaseRetriever):
         """
         try:
             # 1. Normalize query
-            norm_q = await tokenize_and_normalize(query)
-            query_terms = norm_q.split()
+            query_terms = tokenize_for_bm25(query)
 
             if not query_terms:
                 return []
@@ -65,6 +71,13 @@ class BM25LexicalRetriever(BaseRetriever):
                 else:
                     logger.warning(f"BM25 returned index {doc_idx} mapping to missing id {doc_id}")
 
+            if self.debug_enabled:
+                retrieval_logger.debug(
+                    "retriever=lexical query=%r top_k=%s preview=%s",
+                    query,
+                    top_k,
+                    build_retrieved_chunk_preview(results, self.preview_k),
+                )
             return results
 
         except Exception as e:

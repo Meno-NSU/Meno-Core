@@ -1,8 +1,9 @@
 import logging
 from typing import List, Optional
 
+from meno_core.core.lexical_normalizer import normalize_for_bm25
 from meno_core.core.rag.models import Chunk, ChunkMetadata
-from meno_core.core.rag_engine import tokenize_and_normalize, generate_with_llm
+from meno_core.core.rag_engine import generate_with_llm
 from meno_core.core.rag.prompts import TITLE_EXTRACTION_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ async def build_chunk(
     text_for_dense += f"\n{text}"
     
     # Stem normalization for BM25
-    text_for_bm25 = await tokenize_and_normalize(text_for_dense)
+    text_for_bm25 = normalize_for_bm25(text_for_dense)
     
     metadata = ChunkMetadata(
         document_id=document_id,

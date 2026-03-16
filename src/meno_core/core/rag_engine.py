@@ -25,19 +25,20 @@ from nltk import wordpunct_tokenize  # type: ignore[import]
 from nltk.stem.snowball import SnowballStemmer  # type: ignore[import]
 from rank_bm25 import BM25Okapi  # type: ignore[import]
 from torch import Tensor
-from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification  # type: ignore[import]
+from transformers import AutoModelForTokenClassification  # type: ignore[import]
 from transformers import AutoTokenizer, AutoModel  # type: ignore[import]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.lexical_normalizer import normalize_for_bm25, tokenize_for_bm25
 from meno_core.core.prompts import (
     TEMPLATE_FOR_ABBREVIATION_EXPLAINING,
     SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
     FEW_SHOTS_FOR_ANAPHORA,
 )
+from meno_core.core.rag.rerank.qwen_reranker import load_cached_qwen_reranker_backend, QwenRerankerBackend
 
-_reranker_tokenizer = None
-_reranker_model = None
+_reranker_backend: QwenRerankerBackend | None = None
 
 TEMPERATURE: float = settings.temperature
 QUERY_MAX_TOKENS: int = settings.query_max_tokens
@@ -47,18 +48,13 @@ RELATION_MAX_TOKENS: int = settings.relation_max_tokens
 TOP_K: int = settings.top_k
 CHUNK_TOP_K: int = settings.chunk_top_k
 WORKING_DIR: Path = Path(settings.working_dir) if settings.working_dir else Path("./tmp_working_dir")
-print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(str(WORKING_DIR))}')
 ABBREVIATIONS_PATH: Path | None = settings.abbreviations_path
-print(f'os.path.isfile({ABBREVIATIONS_PATH}) = {os.path.isfile(str(ABBREVIATIONS_PATH))}')
 URLS_PATH: str = str(settings.urls_path)
-print(f'os.path.isfile({URLS_PATH}) = {os.path.isfile(str(URLS_PATH))}')
-LOCAL_EMBEDDER_DIMENSION: int = settings.embedder_dim
-LOCAL_EMBEDDER_MAX_TOKENS: int = settings.embedder_max_tokens
-LOCAL_EMBEDDER_PATH: Path | None = settings.local_embedder_path
-LOCAL_RERANKER_MAX_TOKENS: int = 4096
-LOCAL_RERANKER_PATH: Path | None = settings.local_reranker_path
+MULTILINGUAL_EMBEDDER_DIMENSION: int = settings.embedder_dim
+MULTILINGUAL_EMBEDDER_MAX_TOKENS: int = settings.embedder_max_tokens
+MULTILINGUAL_EMBEDDER_PATH: str = settings.multilingual_embedder_path
+RERANKER_PATH: str = settings.reranker_path
 DEFAULT_HALLUCINATION_THRESHOLD: float = 0.3
-print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(str(LOCAL_EMBEDDER_PATH))}')
 
 THINK_END_TOKEN = '</think>'
 
@@ -344,12 +340,12 @@ async def gte_hf_embed(texts: List[str], tokenizer: Any, embed_model: Any) -> np
         device = next(embed_model.parameters()).device
         batch_dict = tokenizer(
             texts, return_tensors='pt',
-            max_length=LOCAL_EMBEDDER_MAX_TOKENS, padding=True, truncation=True,
+            max_length=MULTILINGUAL_EMBEDDER_MAX_TOKENS, padding=True, truncation=True,
         ).to(device)
         with torch.no_grad():
             outputs = embed_model(**batch_dict)
             embeddings: Tensor = F.normalize(
-                outputs.last_hidden_state[:, 0][:LOCAL_EMBEDDER_DIMENSION],
+                outputs.last_hidden_state[:, 0, :MULTILINGUAL_EMBEDDER_DIMENSION],
                 p=2, dim=1
             )
         result: np.ndarray
@@ -358,49 +354,26 @@ async def gte_hf_embed(texts: List[str], tokenizer: Any, embed_model: Any) -> np
         else:
             result = embeddings.detach().cpu().numpy()
 
-        logger.info(f"Embeddings for {texts} generated successfully")
+        logger.debug("Generated %s multilingual embeddings", len(texts))
         return result
     except Exception as e:
         logger.error(f"Error in gte_hf_embed: {str(e)}", exc_info=True)
         raise
 
 
-async def gte_hf_rerank(
+async def qwen_hf_rerank(
         query: str,
         documents: List[str],
-        tokenizer: Any,
-        reranker: Any,
+        reranker_backend: QwenRerankerBackend,
         top_n: Optional[int] = None,
 ) -> List[dict[str, Any]]:
-    device = next(reranker.parameters()).device
-    scores = []
-    minibatch_size = 4
-    num_batches = math.ceil(len(documents) / minibatch_size)
-    for batch_idx in range(num_batches):
-        batch_start = batch_idx * minibatch_size
-        batch_end = min(len(documents), batch_start + minibatch_size)
-        pairs = [[query, cur_doc] for cur_doc in documents[batch_start:batch_end]]
-        with torch.no_grad():
-            inputs = tokenizer(pairs, padding=True, return_tensors='pt').to(device)
-            scores += reranker(**inputs, return_dict=True).logits.view(-1, ).float().cpu().numpy().tolist()
-            del inputs
-        del pairs
-    reranking_result = [{'index': doc_idx, 'relevance_score': float(scores[doc_idx])} for doc_idx in
-                        range(len(documents))]
-    if top_n is not None:
-        if top_n < len(reranking_result):
-            sorted_reranking_result = sorted(reranking_result, key=lambda it: -it['relevance_score'])
-            reranking_result = sorted(sorted_reranking_result[0:top_n], key=lambda it: it['index'])
-            del sorted_reranking_result
-    del scores
-    return reranking_result
+    return reranker_backend.rerank_documents(query=query, documents=documents, top_n=top_n)
 
 
 async def score_answer_relevance_to_prompt(
         prompt: str,
         answer: str,
-        reranker_tokenizer: Any,
-        reranker_model: Any,
+        reranker_backend: QwenRerankerBackend,
         normalize: bool = True,
 ) -> float:
     """
@@ -409,10 +382,8 @@ async def score_answer_relevance_to_prompt(
 
     :param prompt: исходный пользовательский запрос / промпт
     :param answer: ответ модели, который хотим проверить на релевантность
-    :param reranker_tokenizer: токенизатор для LOCAL_RERANKER_PATH
-    :param reranker_model: AutoModelForSequenceClassification для LOCAL_RERANKER_PATH
-    :param normalize: если True — возвращает значение в [0,1] через сигмоиду,
-                      если False — сырое значение логита из реранкера
+    :param reranker_backend: causal-lm реранкер с yes/no scoring
+    :param normalize: сохранён для обратной совместимости; Qwen backend уже отдаёт значение в [0,1]
     :return: скор релевантности (float). Чем ближе к 1, тем ответ ближе к вопросу.
              Можно использовать пороги типа:
              - > 0.7 — ответ хорошо соответствует запросу
@@ -420,22 +391,18 @@ async def score_answer_relevance_to_prompt(
              - < 0.4 — высокая вероятность галлюцинаций/ухода от темы
     """
     try:
-        rerank_result = await gte_hf_rerank(
+        rerank_result = await qwen_hf_rerank(
             query=answer,
             documents=[prompt],
-            tokenizer=reranker_tokenizer,
-            reranker=reranker_model,
+            reranker_backend=reranker_backend,
             top_n=1,
         )
         raw_score: float = float(rerank_result[0]["relevance_score"])
-        logger.debug(f"Raw reranker score for answer vs prompt: {raw_score}")
+        logger.debug("Raw reranker score for answer vs prompt: %s", raw_score)
 
         if not normalize:
             return raw_score
-
-        prob = 1.0 / (1.0 + math.exp(-raw_score))
-        logger.debug(f"Normalized reranker score (sigmoid): {prob}")
-        return prob
+        return raw_score
 
     except Exception as e:
         logger.error(f"Error in score_answer_relevance_to_prompt: {str(e)}", exc_info=True)
@@ -464,7 +431,7 @@ async def is_likely_hallucination(
         logger.warning("is_likely_hallucination: empty prompt or answer")
         return True, 0.0
 
-    if _reranker_tokenizer is None or _reranker_model is None:
+    if _reranker_backend is None:
         logger.warning(
             "is_likely_hallucination: reranker is not initialized; "
             "returning (False, 0.0)"
@@ -475,8 +442,7 @@ async def is_likely_hallucination(
         score = await score_answer_relevance_to_prompt(
             prompt=original_prompt,
             answer=llm_answer,
-            reranker_tokenizer=_reranker_tokenizer,
-            reranker_model=_reranker_model,
+            reranker_backend=_reranker_backend,
             normalize=True,
         )
     except Exception as e:
@@ -503,7 +469,7 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
     """
     try:
         logger.info("Initializing RAG system...")
-        embedder_path = str(LOCAL_EMBEDDER_PATH) if LOCAL_EMBEDDER_PATH else "Alibaba-NLP/gte-multilingual-base"
+        embedder_path = MULTILINGUAL_EMBEDDER_PATH
         logger.info(f"Loading tokenizer and embedder model: {embedder_path}...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
             embedder_path,
@@ -517,23 +483,13 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         emb_model.eval()
         logger.info(f"Model {embedder_path} loaded successfully")
 
-        reranker_path = str(
-            LOCAL_RERANKER_PATH) if LOCAL_RERANKER_PATH else "Alibaba-NLP/gte-multilingual-reranker-base"
+        reranker_path = RERANKER_PATH
         logger.info(f"Loading tokenizer and reranker model: {reranker_path}...")
-        reranker_tokenizer = AutoTokenizer.from_pretrained(
-            reranker_path
-        )
-        reranker_model = AutoModelForSequenceClassification.from_pretrained(
-            reranker_path,
-            trust_remote_code=True,
-            device_map='cpu',
-        )
-        reranker_model.eval()
+        reranker_backend = load_cached_qwen_reranker_backend(reranker_path)
         logger.info(f"Reranker {reranker_path} loaded successfully")
 
-        global _reranker_tokenizer, _reranker_model
-        _reranker_tokenizer = reranker_tokenizer
-        _reranker_model = reranker_model
+        global _reranker_backend
+        _reranker_backend = reranker_backend
 
         logger.info("Initializing shared data and pipeline status...")
         initialize_share_data()
@@ -575,15 +531,15 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
             llm_model_func=llm_model_func,
             cosine_better_than_threshold=0.05,
             embedding_func=EmbeddingFunc(
-                embedding_dim=LOCAL_EMBEDDER_DIMENSION,
-                max_token_size=LOCAL_EMBEDDER_MAX_TOKENS,
+                embedding_dim=MULTILINGUAL_EMBEDDER_DIMENSION,
+                max_token_size=MULTILINGUAL_EMBEDDER_MAX_TOKENS,
                 func=lambda texts: gte_hf_embed(
                     texts,
                     tokenizer=emb_tokenizer,
                     embed_model=emb_model
                 )
             ),
-            rerank_model_func=partial(gte_hf_rerank, tokenizer=reranker_tokenizer, reranker=reranker_model),
+            rerank_model_func=partial(qwen_hf_rerank, reranker_backend=reranker_backend),
             addon_params={'language': 'Russian'}
         )
         logger.info("Initializing RAG storages...")
@@ -639,13 +595,7 @@ _snow = SnowballStemmer(language='russian')
 
 
 async def tokenize_and_normalize(text: str) -> str:
-    words = []
-    for w in wordpunct_tokenize(text):
-        if w.isalnum():
-            stem = _snow.stem(w.lower()).strip()
-            if stem:
-                words.append(stem)
-    return ' '.join(words)
+    return normalize_for_bm25(text)
 
 
 async def build_chunks_db_and_bm25(working_dir: Union[str, Path]):
@@ -665,6 +615,6 @@ async def build_chunks_db_and_bm25(working_dir: Union[str, Path]):
         raw = json.load(fp)
     # [(content, full_doc_id)]
     chunk_db = [(raw[k]["content"], raw[k]["full_doc_id"]) for k in raw]
-    norm_texts = [await tokenize_and_normalize(c[0]) for c in chunk_db]
+    norm_texts = [tokenize_for_bm25(content) for content, _doc_id in chunk_db]
     bm25 = BM25Okapi(norm_texts)
     return chunk_db, bm25

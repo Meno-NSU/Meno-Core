@@ -8,6 +8,7 @@ from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.lexical_normalizer import tokenize_for_bm25
 from meno_core.core.prompts import (
     SEARCH_SYSTEM_PROMPT,
     MEANINGLESS_REQUEST_ANSWER,
@@ -15,10 +16,8 @@ from meno_core.core.prompts import (
 )
 from meno_core.core.rag_engine import (
     generate_with_llm,
-    _snow,
-    _reranker_tokenizer,
-    _reranker_model,
 )
+from meno_core.core.rag.rerank.qwen_reranker import load_cached_qwen_reranker_backend
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +38,7 @@ class ZvecRAGEngine:
         self.bm25 = bm25
         self.chunk_db = chunk_db
         self.zvec_path = self.working_dir / "zvec_index"
+        self.reranker_backend = load_cached_qwen_reranker_backend(settings.reranker_path)
 
         # We will initialize zvec collection inline here or load it.
         self._init_zvec_collection()
@@ -192,34 +192,17 @@ class ZvecRAGEngine:
         return 0.0 if t1.strip().lower() == t2.strip().lower() else 1.0
 
     def _prepare_text_for_bm25(self, text: str) -> List[str]:
-        words = []
-        for w in text.split():
-            if w.isalnum():
-                words.append(_snow.stem(w.lower()).strip())
-        return words
+        return tokenize_for_bm25(text)
 
     async def _rerank(self, query: str, chunk_ids: List[int], top_n: int) -> Dict[int, float]:
-        if _reranker_model is None or _reranker_tokenizer is None:
+        if not chunk_ids:
+            return {}
+
+        if self.reranker_backend is None:
             return {i: 1.0 for i in chunk_ids[:top_n]}
 
         docs = [self.chunk_db[i][0] for i in chunk_ids]
-
-        import torch
-        device = next(_reranker_model.parameters()).device
-        scores = []
-        minibatch_size = 4
-        import math
-        num_batches = math.ceil(len(docs) / minibatch_size)
-
-        for batch_idx in range(num_batches):
-            batch_start = batch_idx * minibatch_size
-            batch_end = min(len(docs), batch_start + minibatch_size)
-            pairs = [[query, d] for d in docs[batch_start:batch_end]]
-
-            with torch.no_grad():
-                inputs = _reranker_tokenizer(pairs, padding=True, truncation=True, return_tensors='pt',
-                                             max_length=512).to(device)
-                scores += _reranker_model(**inputs, return_dict=True).logits.view(-1, ).float().cpu().numpy().tolist()
+        scores = self.reranker_backend.score_pairs([(query, doc) for doc in docs])
 
         scored_docs = list(zip(chunk_ids, scores))
         scored_docs.sort(key=lambda x: -x[1])

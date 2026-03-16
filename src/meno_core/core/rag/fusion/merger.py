@@ -1,19 +1,27 @@
 import logging
-from typing import List, Dict
+from dataclasses import dataclass
+from typing import Dict, List
 
+from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.models import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class FusionResult:
+    chunks: List[RetrievedChunk]
+    fused_preview: List[dict]
+
+
 class HybridFusion:
     """
-    Merges results from multiple retrievers (e.g., dense and lexical) using Weighted Sum with Min-Max normalisation.
+    Merges results from multiple retrievers using Weighted Sum with min-max normalisation.
     """
 
-    def __init__(self, dense_weight: float = 0.6, lexical_weight: float = 0.4):
-        self.dense_weight = dense_weight
-        self.lexical_weight = lexical_weight
+    def __init__(self, weights: Dict[str, float], preview_k: int = 5):
+        self.weights = weights
+        self.preview_k = preview_k
 
     def _normalize_scores(self, chunks: List[RetrievedChunk]) -> Dict[str, float]:
         """
@@ -39,28 +47,31 @@ class HybridFusion:
 
     def fuse(
         self,
-        dense_results: List[RetrievedChunk],
-        lexical_results: List[RetrievedChunk],
+        result_sets: Dict[str, List[RetrievedChunk]],
         top_k: int
-    ) -> List[RetrievedChunk]:
+    ) -> FusionResult:
         """
         Perform min-max normalization independently on each source, then sum the weighted values.
         """
-        norm_dense = self._normalize_scores(dense_results)
-        norm_lexical = self._normalize_scores(lexical_results)
+        normalized_scores = {
+            source_name: self._normalize_scores(chunks)
+            for source_name, chunks in result_sets.items()
+        }
 
         # Build union map chunk_id -> Chunk
         # Store max of (raw chunks) to preserve metadata
         chunk_map = {}
-        for c in dense_results + lexical_results:
-            chunk_map[c.chunk.chunk_id] = c.chunk
+        for chunks in result_sets.values():
+            for chunk_wrapper in chunks:
+                chunk_map[chunk_wrapper.chunk.chunk_id] = chunk_wrapper.chunk
 
         # Calculate fused scores
         fused_scores = {}
         for cid in chunk_map.keys():
-            d_score = norm_dense.get(cid, 0.0) * self.dense_weight
-            l_score = norm_lexical.get(cid, 0.0) * self.lexical_weight
-            fused_scores[cid] = d_score + l_score
+            fused_scores[cid] = sum(
+                normalized_scores.get(source_name, {}).get(cid, 0.0) * self.weights.get(source_name, 0.0)
+                for source_name in result_sets.keys()
+            )
 
         # Sort by best combined score
         sorted_pairs = sorted(fused_scores.items(), key=lambda x: -x[1])[:top_k]
@@ -76,4 +87,7 @@ class HybridFusion:
                 )
             )
 
-        return final_results
+        return FusionResult(
+            chunks=final_results,
+            fused_preview=build_retrieved_chunk_preview(final_results, self.preview_k),
+        )

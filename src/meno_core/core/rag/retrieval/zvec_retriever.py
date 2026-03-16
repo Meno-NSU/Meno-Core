@@ -3,11 +3,13 @@ from typing import List, Dict
 
 import zvec
 
-from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
+from meno_core.core.rag.embeddings import DenseEmbedder
 from meno_core.core.rag.models import Chunk, RetrievedChunk
 from meno_core.core.rag.retrieval.base import BaseRetriever
 
 logger = logging.getLogger(__name__)
+retrieval_logger = logging.getLogger("chunk_rag.retrieval")
 
 
 class ZvecDenseRetriever(BaseRetriever):
@@ -17,13 +19,20 @@ class ZvecDenseRetriever(BaseRetriever):
 
     def __init__(
         self,
-        embedder: GTEEmbedding,
+        name: str,
+        embedder: DenseEmbedder,
         collection: zvec.Collection,
-        chunk_map: Dict[str, dict]
+        chunk_map: Dict[str, dict],
+        *,
+        debug_enabled: bool = False,
+        preview_k: int = 5,
     ):
+        self.name = name
         self.embedder = embedder
         self.collection = collection
         self.chunk_map = chunk_map
+        self.debug_enabled = debug_enabled
+        self.preview_k = preview_k
 
     async def retrieve(self, query: str, top_k: int) -> List[RetrievedChunk]:
         """
@@ -31,8 +40,7 @@ class ZvecDenseRetriever(BaseRetriever):
         """
         try:
             # 1. Embed query
-            embed_res = self.embedder.encode([query], return_dense=True, return_sparse=False)
-            q_vec = embed_res["dense_embeddings"][0].detach().cpu().numpy().tolist()
+            q_vec = self.embedder.encode_queries([query])[0].detach().cpu().numpy().tolist()
 
             # 2. Query zvec
             zvec_results = self.collection.query(
@@ -54,12 +62,20 @@ class ZvecDenseRetriever(BaseRetriever):
                         RetrievedChunk(
                             chunk=chunk_obj,
                             score=score,
-                            source="dense"
+                            source=self.name
                         )
                     )
                 else:
                     logger.warning(f"Zvec returned ID {doc_id} but it's not in chunk map.")
 
+            if self.debug_enabled:
+                retrieval_logger.debug(
+                    "retriever=%s query=%r top_k=%s preview=%s",
+                    self.name,
+                    query,
+                    top_k,
+                    build_retrieved_chunk_preview(results, self.preview_k),
+                )
             return results
 
         except Exception as e:

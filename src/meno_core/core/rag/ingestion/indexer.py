@@ -2,14 +2,15 @@ import json
 import logging
 import os
 import pickle
+import shutil
 from pathlib import Path
-from typing import List, Union, Tuple, Any
+from typing import Any, Dict, List, Tuple, Union
 
 import zvec
 from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
-from meno_core.config.settings import settings
-from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.rag.config import ChunkRagConfig
+from meno_core.core.rag.embeddings import DenseEmbedder
 from meno_core.core.rag.models import Chunk
 
 logger = logging.getLogger(__name__)
@@ -17,106 +18,157 @@ logger = logging.getLogger(__name__)
 
 class Indexer:
     """
-    Handles offline indexing of Chunks into a Zvec graph for dense retrieval
+    Handles offline indexing of Chunks into multiple Zvec collections for dense retrieval
     and a serialized BM25Okapi object for lexical retrieval.
     """
 
     def __init__(
-            self,
-            working_dir: Union[str, Path],
-            embedder: GTEEmbedding,
-            zvec_collection_name: str = "meno_zvec_chunk_rag"
+        self,
+        working_dir: Union[str, Path],
+        dense_embedders: Dict[str, DenseEmbedder],
+        reranker_path: str,
+        config: ChunkRagConfig,
     ):
         self.working_dir = Path(working_dir)
-        self.embedder = embedder
-        self.zvec_collection_name = zvec_collection_name
+        self.dense_embedders = dense_embedders
+        self.reranker_path = reranker_path
+        self.config = config
 
-        self.zvec_path = self.working_dir / "zvec_chunk_idx"
+        self.zvec_paths = {
+            "multilingual_dense": self.working_dir / "zvec_multilingual_idx",
+            "russian_dense": self.working_dir / "zvec_russian_idx",
+        }
         self.bm25_path = self.working_dir / "bm25_stemmed_kb.pkl"
         self.chunks_meta_path = self.working_dir / "chunk_rag_metadata.json"
+        self.manifest_path = self.working_dir / "chunk_rag_manifest.json"
+
+    def expected_manifest(self) -> dict[str, Any]:
+        return {
+            "schema_version": 2,
+            "dense_indexes": {
+                source_name: {
+                    "path": str(self.zvec_paths[source_name].name),
+                    "model_path": embedder.model_path,
+                    "dimension": embedder.dimension,
+                    "pooling_strategy": embedder.pooling_strategy,
+                    "query_prefix": embedder.query_prefix,
+                    "document_prefix": embedder.document_prefix,
+                }
+                for source_name, embedder in self.dense_embedders.items()
+            },
+            "bm25": {
+                "normalizer_version": 2,
+            },
+            "reranker": {
+                "model_path": self.reranker_path,
+                "backend": "qwen_yes_no",
+            },
+            "fusion_weights": {
+                "multilingual_dense": self.config.fusion_weight_multilingual,
+                "russian_dense": self.config.fusion_weight_russian,
+                "lexical": self.config.fusion_weight_bm25,
+            },
+        }
+
+    def needs_rebuild(self) -> bool:
+        if not self.chunks_meta_path.exists() or not self.bm25_path.exists() or not self.manifest_path.exists():
+            return True
+
+        if any(not path.exists() for path in self.zvec_paths.values()):
+            return True
+
+        try:
+            with self.manifest_path.open("r", encoding="utf-8") as fp:
+                current_manifest = json.load(fp)
+        except Exception:
+            return True
+
+        return current_manifest != self.expected_manifest()
 
     async def build_index(self, chunks: List[Chunk], batch_size: int = 32):
         """
-        Builds and saves the Zvec index, the BM25 index, and metadata store.
+        Builds and saves the multi-vector Zvec indexes, the BM25 index, metadata store,
+        and manifest that describes the retrieval layout.
         """
-        logger.info(f"Starting indexing for {len(chunks)} chunks...")
+        logger.info("Starting indexing for %s chunks...", len(chunks))
 
-        import shutil
-        import os
-
-        # 1. Ensure working directory exists, and clean up existing zvec path if it exists
-        # Zvec throws "path validate failed" if we use create_and_open on an existing path
         os.makedirs(self.working_dir, exist_ok=True)
-        if self.zvec_path.exists():
-            logger.info(f"Removing existing zvec index at {self.zvec_path} before re-building...")
-            shutil.rmtree(self.zvec_path, ignore_errors=True)
+        for path in self.zvec_paths.values():
+            if path.exists():
+                logger.info("Removing existing zvec index at %s before re-building...", path)
+                shutil.rmtree(path, ignore_errors=True)
 
-        # 2. Extract texts for BM25 and build it
         logger.info("Building BM25 index...")
         bm25_corpus = [chunk.text_for_bm25.split() for chunk in chunks]
         bm25 = BM25Okapi(bm25_corpus)
-        with open(self.bm25_path, "wb") as f:
-            pickle.dump(bm25, f)
-        logger.info(f"BM25 index saved to {self.bm25_path}")
+        with self.bm25_path.open("wb") as fp:
+            pickle.dump(bm25, fp)
+        logger.info("BM25 index saved to %s", self.bm25_path)
 
-        # 3. Create Zvec Collection schema
-        schema = zvec.CollectionSchema(
-            name=self.zvec_collection_name,
-            vectors=zvec.VectorSchema(
-                "embedding",
-                zvec.DataType.VECTOR_FP32,
-                settings.embedder_dim
-            ),
-        )
+        collections = {}
+        for source_name, embedder in self.dense_embedders.items():
+            schema = zvec.CollectionSchema(
+                name=f"meno_{source_name}",
+                vectors=zvec.VectorSchema(
+                    "embedding",
+                    zvec.DataType.VECTOR_FP32,
+                    embedder.dimension,
+                ),
+            )
+            collections[source_name] = zvec.create_and_open(path=str(self.zvec_paths[source_name]), schema=schema)
 
-        # Open or overwrite zvec collection
-        # zvec.create_and_open typically creates or loads.
-        # If we are re-indexing everything, we might need to delete old first, but let's assume zvec creates new or appends.
-        # For simplicity, we create and open.
-        collection = zvec.create_and_open(path=str(self.zvec_path), schema=schema)
+        chunk_metadata_dict: dict[str, Any] = {}
 
-        # 4. Save metadata dictionary (to map chunk array index -> Chunk object)
-        chunk_metadata_dict = {}
+        logger.info("Encoding and inserting into Zvec in batches of %s...", batch_size)
+        for batch_start in range(0, len(chunks), batch_size):
+            batch_chunks = chunks[batch_start:batch_start + batch_size]
+            dense_texts = [chunk.text_for_dense for chunk in batch_chunks]
+            doc_ids = [str(batch_start + offset) for offset in range(len(batch_chunks))]
 
-        # 5. Calculate embeddings and insert into Zvec in batches
-        logger.info(f"Encoding and inserting into Zvec in batches of {batch_size}...")
-        for i in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[i:i + batch_size]
-            dense_texts = [c.text_for_dense for c in batch_chunks]
+            for source_name, embedder in self.dense_embedders.items():
+                embeddings = embedder.encode_documents(dense_texts).detach().cpu().numpy().tolist()
+                docs = [
+                    zvec.Doc(id=doc_id, vectors={"embedding": embeddings[offset]})
+                    for offset, doc_id in enumerate(doc_ids)
+                ]
+                collections[source_name].insert(docs)
 
-            embeddings_res = self.embedder.encode(dense_texts, return_dense=True, return_sparse=False)
-            embeddings = embeddings_res["dense_embeddings"].detach().cpu().numpy().tolist()
+            for offset, chunk in enumerate(batch_chunks):
+                chunk_metadata_dict[doc_ids[offset]] = chunk.model_dump()
 
-            docs = []
-            for j, chunk in enumerate(batch_chunks):
-                internal_id = i + j
-                chunk_metadata_dict[str(internal_id)] = chunk.model_dump()
-                docs.append(zvec.Doc(id=str(internal_id), vectors={"embedding": embeddings[j]}))
+            logger.debug(
+                "Inserted batch %s/%s into dense indexes",
+                batch_start // batch_size + 1,
+                (len(chunks) + batch_size - 1) // batch_size,
+            )
 
-            collection.insert(docs)
-            logger.debug(f"Inserted batch {i // batch_size} of {len(chunks) // batch_size}")
+        with self.chunks_meta_path.open("w", encoding="utf-8") as fp:
+            json.dump(chunk_metadata_dict, fp, ensure_ascii=False, indent=2)
 
-        # Write metadata to disk
-        with open(self.chunks_meta_path, "w", encoding="utf-8") as f:
-            json.dump(chunk_metadata_dict, f, ensure_ascii=False, indent=2)
+        with self.manifest_path.open("w", encoding="utf-8") as fp:
+            json.dump(self.expected_manifest(), fp, ensure_ascii=False, indent=2)
 
         logger.info("Indexing complete.")
 
-    def load_indexes(self) -> Tuple[Any, BM25Okapi, dict]:
+    def load_indexes(self) -> Tuple[Dict[str, Any], BM25Okapi, dict, dict]:
         """
-        Loads the Zvec collection, the BM25 object, and the metadata dictionary at runtime.
-        Returns:
-            zvec_collection, bm25, metadata_dict
+        Loads the dense collections, BM25 object, metadata dictionary, and manifest.
         """
-        if not self.chunks_meta_path.exists():
-            raise FileNotFoundError(f"Chunk metadata not found at {self.chunks_meta_path}")
+        if self.needs_rebuild():
+            raise FileNotFoundError("Chunk RAG indexes are missing or incompatible with current settings")
 
-        with open(self.chunks_meta_path, "r", encoding="utf-8") as f:
-            chunk_metadata_dict = json.load(f)
+        with self.chunks_meta_path.open("r", encoding="utf-8") as fp:
+            chunk_metadata_dict = json.load(fp)
 
-        with open(self.bm25_path, "rb") as f:
-            bm25 = pickle.load(f)
+        with self.bm25_path.open("rb") as fp:
+            bm25 = pickle.load(fp)
 
-        zvec_collection = zvec.open(path=str(self.zvec_path))
+        with self.manifest_path.open("r", encoding="utf-8") as fp:
+            manifest = json.load(fp)
 
-        return zvec_collection, bm25, chunk_metadata_dict
+        collections = {
+            source_name: zvec.open(path=str(path))
+            for source_name, path in self.zvec_paths.items()
+        }
+
+        return collections, bm25, chunk_metadata_dict, manifest

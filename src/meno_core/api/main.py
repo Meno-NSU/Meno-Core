@@ -41,12 +41,12 @@ from meno_core.api.arena import arena_router
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
 LINKS_LOG_PATH: str = getattr(settings, "links_log_path", "logs/links_debug.log")
-LINKS_LOG_LEVEL: str = getattr(settings, "links_log_level", "DEBUG")  # DEBUG/INFO/WARNING
+LINKS_LOG_LEVEL: str = getattr(settings, "links_log_level", "INFO")  # DEBUG/INFO/WARNING
 LINKS_LOG_MAX_BYTES: int = getattr(settings, "links_log_max_bytes", 10 * 1024 * 1024)
 LINKS_LOG_BACKUP_COUNT: int = getattr(settings, "links_log_backup_count", 5)
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger: Logger = logging.getLogger(__name__)

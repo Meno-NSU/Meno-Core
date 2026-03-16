@@ -5,13 +5,16 @@ from pathlib import Path
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
 from meno_core.core.rag.config import ChunkRagConfig
+from meno_core.core.rag.model_registry import load_chunk_rag_model_registry
 from meno_core.core.rag.orchestration.orchestrator import ChunkRagOrchestrator
 from meno_core.core.rag.retrieval.zvec_retriever import ZvecDenseRetriever
 from meno_core.core.rag.retrieval.bm25_retriever import BM25LexicalRetriever
 from meno_core.core.rag.ingestion.indexer import Indexer
 from meno_core.core.rag.ingestion.source_loader import load_chunks_from_compiled_corpus, resolve_chunk_corpus_path
+from meno_core.core.rag.rerank.qwen_reranker import QwenCausalReranker
 
 logger = logging.getLogger(__name__)
+retrieval_logger = logging.getLogger("chunk_rag.retrieval")
 
 
 async def build_chunk_rag_orchestrator(
@@ -24,35 +27,64 @@ async def build_chunk_rag_orchestrator(
     """
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
-    indexer = Indexer(working_dir=working_dir, embedder=embedder)
+    config = ChunkRagConfig()
+    retrieval_logger.setLevel(getattr(logging, config.retrieval_log_level.upper(), logging.INFO))
+    model_registry = load_chunk_rag_model_registry(embedder)
+    dense_embedders = {
+        "multilingual_dense": model_registry.multilingual_dense,
+        "russian_dense": model_registry.russian_dense,
+    }
+    indexer = Indexer(
+        working_dir=working_dir,
+        dense_embedders=dense_embedders,
+        reranker_path=model_registry.reranker.model_path,
+        config=config,
+    )
     
     try:
         # Check if index exists by trying to load it
-        if not indexer.chunks_meta_path.exists() or not indexer.bm25_path.exists():
+        if indexer.needs_rebuild():
             logger.info("Chunk RAG indices not found. Initializing vector DB from source corpus...")
             await _run_initialization(indexer, working_dir)
         else:
             logger.info("Found existing Chunk RAG indices. Proceeding to load...")
             
-        zvec_collection, bm25, chunk_map = indexer.load_indexes()
+        collections, bm25, chunk_map, _manifest = indexer.load_indexes()
         
-        dense_retriever = ZvecDenseRetriever(
-            embedder=embedder,
-            collection=zvec_collection,
-            chunk_map=chunk_map
-        )
-        
+        dense_retrievers = {
+            "multilingual_dense": ZvecDenseRetriever(
+                name="multilingual_dense",
+                embedder=model_registry.multilingual_dense,
+                collection=collections["multilingual_dense"],
+                chunk_map=chunk_map,
+                debug_enabled=config.debug_retrieval,
+                preview_k=config.retrieval_preview_k,
+            ),
+            "russian_dense": ZvecDenseRetriever(
+                name="russian_dense",
+                embedder=model_registry.russian_dense,
+                collection=collections["russian_dense"],
+                chunk_map=chunk_map,
+                debug_enabled=config.debug_retrieval,
+                preview_k=config.retrieval_preview_k,
+            ),
+        }
         lexical_retriever = BM25LexicalRetriever(
             bm25=bm25,
-            chunk_map=chunk_map
+            chunk_map=chunk_map,
+            debug_enabled=config.debug_retrieval,
+            preview_k=config.retrieval_preview_k,
         )
-        
-        config = ChunkRagConfig()
-        
+
         orchestrator = ChunkRagOrchestrator(
             config=config,
-            dense_retriever=dense_retriever,
-            lexical_retriever=lexical_retriever
+            dense_retrievers=dense_retrievers,
+            lexical_retriever=lexical_retriever,
+            reranker=QwenCausalReranker(
+                backend=model_registry.reranker,
+                filter_threshold=0.0,
+                preview_k=config.retrieval_preview_k,
+            ),
         )
         logger.info("✅ ChunkRAG Orchestrator successfully initialized.")
         return orchestrator
