@@ -2,7 +2,7 @@ Meno-Core
 
 Meno-Core is a small OpenAI-compatible backend that adds a Retrieval-Augmented Generation (RAG) layer, abbreviation handling and link suggestions on top of a chat completion API.
 
-Project structure
+## Project structure
 - `src/meno_core/api/main.py` – FastAPI application exposing an OpenAI-style `POST /v1/chat/completions` endpoint (non-streaming and streaming)
 - `src/meno_core/core/rag_engine.py` – RAG pipeline, LLM calls, abbreviation and anaphora resolution
 - `src/meno_core/core/link_searcher.py` – selects and formats relevant links from `resources/validated_urls.json`
@@ -12,29 +12,36 @@ Project structure
 - `resources/` – abbreviations and validated URLs
 - `scripts/run_backend.sh` – helper script to run the backend
 
-Main features
+## Main features
 - OpenAI Chat Completions–compatible HTTP API (request and response schema)
 - Retrieval-Augmented Generation over a local knowledge base
 - Automatic handling of abbreviations and anaphora in user questions
 - Optional enrichment of answers with a short list of “interesting links”
 - Optional logging of conversations to PostgreSQL
 
-Requirements
+## Requirements
 - Python 3.12 or newer
 - Access to an OpenAI-compatible LLM endpoint (or a self-hosted equivalent)
 - Local embedding and reranker models (paths configured via environment variables)
 - Optional: running PostgreSQL instance for logging
 
-Installation
+## Installation
 - Clone the repository
 - Create and activate a virtual environment
 - Install dependencies (using pip or uv)
+- Download datasets
 
-Example with uv:
+## Datasets
+Download dataset with NSU-data:
+```bash
+git lfs clone https://huggingface.co/datasets/Sckwoky/Meno-NSU-Data
+```
+
+## Example with uv:
 - Install uv (if needed): `pip install uv`
 - From the project root: `uv sync`
 
-Configuration
+## Configuration
 - Copy `example.env` to `.env`
 - Adjust values to your environment, in particular:
   - `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL_NAME`
@@ -44,13 +51,13 @@ Configuration
   - `URLS_PATH` (for example `resources/validated_urls.json`)
 - Optionally tune RAG and link settings via variables defined in `src/meno_core/config/settings.py`
 
-Running the backend
+## Running the backend
 - Using uvicorn directly:
   - From the project root: `uv run uvicorn meno_core.api.main:app --host 0.0.0.0 --port 9006`
 - Or using the helper script:
   - From the project root: `bash scripts/run_backend.sh`
 
-Basic usage
+## Basic usage
 - Base URL: `http://127.0.0.1:9006`
 - Endpoint: `POST /v1/chat/completions`
 - Request body (simplified):
@@ -59,10 +66,10 @@ Basic usage
   - optional: `stream` (boolean) to enable server-sent events
 - Response shape follows the OpenAI Chat Completions API (choices with `message.content`)
 
-Logging
+## Logging
 - If configured, conversations are stored in PostgreSQL using SQLAlchemy models in `src/meno_core/infrastructure/logdb`
 - Connection parameters can be adjusted in the logging configuration and environment variables
 
-License
+## License
 - Add a license statement here if you plan to distribute this project
 
