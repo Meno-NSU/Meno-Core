@@ -690,15 +690,15 @@ async def list_knowledge_bases():
         
     kbs = [{
         "id": kb_name,
-        "name": "Основная база знаний (Граф)",
-        "description": "База знаний по умолчанию на основе графов знаний"
+        "name": "Граф знаний",
+        "description": "База знаний по умолчанию на основе графа знаний"
     }]
     
     if chunk_rag_orchestrator is not None:
         kbs.append({
             "id": "chunk-rag-kb",
-            "name": "Прямой поиск по параграфам (Chunk RAG)",
-            "description": "Использует семантический (zvec) и лексический (BM25) поиск по точным параграфам."
+            "name": "Векторный поиск",
+            "description": "Использует семантический (zvec) и лексический (BM25) поиск по текстовым чанкам"
         })
         
     return {
