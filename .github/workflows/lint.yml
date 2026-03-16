@@ -1,0 +1,37 @@
+name: Lint & Type Check
+
+on:
+  push:
+    branches: ["main", "master", "dev"]
+  pull_request:
+    branches: ["main", "master", "dev"]
+
+jobs:
+  lint:
+    name: Ruff + Mypy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      # Ruff ловит UnboundLocalError-паттерны через правила F (pyflakes):
+      # F821 - обращение к неопределённой переменной
+      # F811 - переопределение импортированного имени
+      - name: Ruff (lint)
+        run: uv run ruff check src/
+
+      # Mypy ловит ошибки типов, включая несовместимые возвращаемые значения
+      - name: Mypy (type check)
+        run: uv run mypy src/ --ignore-missing-imports
+        continue-on-error: true  # убрать, когда будут исправлены все type errors

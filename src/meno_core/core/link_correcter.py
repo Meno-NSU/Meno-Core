@@ -16,13 +16,16 @@ class LinkCorrecter:
     def __init__(self, urls_path: Path | str, dist_threshold: float):
         urls_path = Path(urls_path)
         self.dist_threshold = dist_threshold
-        with urls_path.open(mode='r', encoding='utf-8') as fp:
-            self.urls = set(json.load(fp).values())
+        try:
+            with urls_path.open(mode='r', encoding='utf-8') as fp:
+                self.valid_urls: list[str] = list(json.load(fp).values())
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.valid_urls = []
 
     def find_closest_link(
-        self,
-        url: str,
-        scorer=Levenshtein.normalized_similarity
+            self,
+            url: str,
+            scorer=Levenshtein.normalized_similarity
     ) -> Optional[Tuple[str, float]]:
         """
         Finds the best matching URL from a set of valid links.
@@ -37,18 +40,18 @@ class LinkCorrecter:
             A tuple containing the best matching URL and its similarity score (0-1),
             or None if the link_set is empty.
         """
-        
+
         # extractOne returns the best match in the format (choice, score, index)
         # The score is a similarity score from 0-100, so we divide by 100.
-        result = extractOne(url, self.urls, scorer=scorer)
+        result = extractOne(url, self.valid_urls, scorer=scorer)
         if result:
             best_match, score, _ = result
             return best_match, score / 100.0
         return None
 
     async def replace_markdown_links(
-        self,
-        text: str,
+            self,
+            text: str,
     ) -> str:
         """
         Finds all Markdown-style links in a text, validates them against a set of
@@ -80,7 +83,7 @@ class LinkCorrecter:
             url = match.group(2)
 
             # Case 1: The link is already valid.
-            if url in self.urls:
+            if url in self.valid_urls:
                 return match.group(0)  # Return the original [label](url) string
 
             # Case 2: The link is not valid, find the closest match.
@@ -92,13 +95,14 @@ class LinkCorrecter:
                 best_url, score = closest_match
                 # print(f"Replacing '{url}' with '{best_url}' (Similarity: {score:.2f})")
                 return f'[{label}]({best_url})'
-            
+
             # Case 4: No close match was found.
             else:
                 # print(f"No close match for '{url}'. Removing URL.")
                 return label
 
         return markdown_link_pattern.sub(replacer, text)
+
 
 # --- Example Usage ---
 if __name__ == "__main__":
@@ -140,7 +144,7 @@ if __name__ == "__main__":
     print(document_text)
     print("\n--- Processed Document ---")
     print(processed_text)
-    
+
     # --- Example with a lower threshold ---
     corr = LinkCorrecter("../../../resources/validated_urls.json", dist_threshold=0.1)
     print("\n\n--- Processing with lower threshold (0.7) ---")
@@ -149,4 +153,3 @@ if __name__ == "__main__":
     )
     print("\n--- Processed Document (Low Threshold) ---")
     print(processed_text_low_thresh)
-

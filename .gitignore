@@ -6,3 +6,6 @@ lightrag/
 light_rag_db_v2/
 .venv/
 .idea/*
+resources/lightrag_kg_v3.zip
+resources/lightrag_kg_v3/*
+*.log

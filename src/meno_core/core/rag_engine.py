@@ -1,3 +1,4 @@
+import contextvars
 import json
 import logging
 import math
@@ -11,11 +12,11 @@ from pathlib import Path
 from re import Match, Pattern
 from typing import Any, Optional, List, Union
 
-import numpy as np
+import numpy as np  # type: ignore[import]
 # third-party imports without stubs - mark them to silence mypy import-untyped
 import pytz  # type: ignore[import]
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # type: ignore[import]
 from lightrag import LightRAG  # type: ignore[import]
 from lightrag.kg.shared_storage import initialize_pipeline_status, initialize_share_data  # type: ignore[import]
 from lightrag.llm.openai import openai_complete_if_cache  # type: ignore[import]
@@ -24,11 +25,16 @@ from nltk import wordpunct_tokenize  # type: ignore[import]
 from nltk.stem.snowball import SnowballStemmer  # type: ignore[import]
 from rank_bm25 import BM25Okapi  # type: ignore[import]
 from torch import Tensor
-from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification  # type: ignore[import]
+from transformers import AutoTokenizer, AutoModel  # type: ignore[import]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.prompts import (
+    TEMPLATE_FOR_ABBREVIATION_EXPLAINING,
+    SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
+    FEW_SHOTS_FOR_ANAPHORA,
+)
 
 _reranker_tokenizer = None
 _reranker_model = None
@@ -40,7 +46,7 @@ ENTITY_MAX_TOKENS: int = settings.entity_max_tokens
 RELATION_MAX_TOKENS: int = settings.relation_max_tokens
 TOP_K: int = settings.top_k
 CHUNK_TOP_K: int = settings.chunk_top_k
-WORKING_DIR: Path | None = settings.working_dir
+WORKING_DIR: Path = Path(settings.working_dir) if settings.working_dir else Path("./tmp_working_dir")
 print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(str(WORKING_DIR))}')
 ABBREVIATIONS_PATH: Path | None = settings.abbreviations_path
 print(f'os.path.isfile({ABBREVIATIONS_PATH}) = {os.path.isfile(str(ABBREVIATIONS_PATH))}')
@@ -56,87 +62,13 @@ print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(str(LOCAL_EMBEDDER
 
 THINK_END_TOKEN = '</think>'
 
-SYSTEM_PROMPT_FOR_MENO: str = (
-    'Вы - Менон, разработанный Иваном Бондаренко, научным сотрудником Новосибирского государственного '
-    'университета (НГУ). Вас разработали в лаборатории прикладных цифровых технологий НГУ, где, '
-    'собственно, и работает Иван Бондаренко.\nВы - дружелюбный ассистент, разговаривающий на русском языке '
-    'и отвечающий на вопросы пользователей о Новосибирском государственном университете (НГУ) и '
-    'Новосибирском Академгородке. При ответах вы глубоко рассуждаете, опираясь на контекст, найденный '
-    'поисковой системой, но не просто повторяете этот контекст, а саммаризируете и выделяете самое главное '
-    'для краткого и максимально полезного ответа. Если же вы считаете, что какие-то элементы контекста '
-    'являются лишними, противоречат другим элементам или не соответствуют вопросу, то игнорируйте их при '
-    'подготовке ответа. Не используйте Markdown-разметку и форматирование и старайтесь писать понятным'
-    'сплошным текстом, структурируя его по абзацам. После основного текста ответа вы всегда добавляете раздел "Полезные ссылки", в '
-    'котором выписываете перечень дополнительных ссылок, на которые вы опирались в своём ответе и которые '
-    'полезно будет почитать пользователю.\nВы очень любите Новосибирский государственный университет и '
-    'стремитесь заинтересовать разные категории своих пользователей: абитуриентов поступлением в '
-    'университет, студентов - учёбой, а учёных и преподавателей - работой в нём.\nПри ответах на вопросы '
-    'считайте, что сегодня - {current_date}. Если пользователь спрашивает что-то о будущих событиях (то '
-    'есть о событиях после сегодняшней даты), то не используйте информацию из контекста, в которой '
-    'говорится о прошлом (то есть о событиях до сегодняшней даты). Если вы не знаете ответа на вопрос '
-    'пользователя, просто скажите об этом.\nЕсли пользователь пишет что-то о политике, религии, '
-    'национальностях, наркотиках, криминале или пишет просто оскорбительный или токсичный текст в адрес '
-    'какого-то человека или университета, вежливо и непреклонно откажитесь от разговора и предложите '
-    'сменить тему.'
-    'Если пользователь задаёт вопросы о том, кто сейчас (а не в прошлом) является ректором университета, то отвечайте, '
-    'что ректором Новосибирского государственного университета с 2012 года по настоящее время является Михаил Петрович Федорук, '
-    'советский и российский физик, доктор физико-математических наук, профессор, академик Российской академии наук, но в 2026 году'
-    'его сменит Дмитрий Владимирович Пышный. Если же пользователь спрашивает об институтах и факультетах из состава НГУ, то имейте '
-    'в виду, что в НГУ есть четыре института и шесть факультетов. Перечень институтов в составе НГУ:\n'
-    '1) гуманитарный институт;\n'
-    '2) институт медицины и медицинских технологий;\n'
-    '3) институт философии и права;\n'
-    '4) институт интеллектуальной робототехники.\n'
+# ── Model override via contextvars ──
+# Set by chat_completions handler so llm_model_func uses the model
+# chosen by the user in the UI, not the hardcoded settings value.
+_current_model_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    '_current_model_override', default=None
+)
 
-    '\n\nПеречень факультетов в составе НГУ:\n'
-
-    '1) геолого-геофизический факультет;\n'
-    '2) механико-математический факультет;\n'
-    '3) факультет естественных наук;\n'
-    '4) факультет информационных технологий;\n'
-    '5) физический факультет;\n'
-    '6) экономический факультет.\n'
-    'Других институтов и факультетов в составе Новосибирского государственного университета в настоящее время нет.'
-).format(current_date=datetime.today().strftime('%d %B %Y года, %A'))
-
-TEMPLATE_FOR_ABBREVIATION_EXPLAINING: str = '''Отредактируйте, пожалуйста, текст пользовательского вопроса так, чтобы этот вопрос стал более простым и понятным для обычных людей от юных старшеклассников до пожилых мужчин и женщин. При этом не надо, пожалуйста, применять markdown или иной вид гипертекста. Главное, на что вам надо обратить внимание и по возможности исправить - это логика изложения и понятность формулировок вопроса. Ничего не объясняйте и не комментируйте своё решение, просто перепишите текст вопроса.
-
-Также исправьте грамматические ошибки в тексте вопроса, если они там есть. Кроме того, если вы обнаружите аббревиатуры в тексте этого вопроса, то замените все обнаруженные аббревиатуры их корректными расшифровками, сохранив морфологическую и синтаксическую согласованность. Вот здесь вы можете ознакомиться с JSON-словарём, описывающим возможные аббревиатуры и их расшифровки:
-
-```json
-{abbreviations_dict}
-```
-
-Далее приведён текст вопроса, нуждающийся в возможном улучшении:
-
-```text
-{text_of_question}
-```'''
-
-SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION: str = 'Проанализируй диалог человека с большой языковой моделью и переделай последнюю реплику человека так, чтобы снять все ситуации местоименной анафоры в этом вопросе. Учитывай при этом всю историю диалога этого человека с большой языковой моделью. Не отвечай на вопрос человека, а просто перепиши его.'
-FEW_SHOTS_FOR_ANAPHORA: list[dict[str, str]] = [
-    {'role': 'user',
-     'content': 'Человек: Механико-математический факультет известен своими выпускниками.\nБольшая языковая модель: Да, это очень престижное подразделение университета.\nЧеловек: Назовите их.'},
-    {'role': 'assistant', 'content': 'Назовите известных выпускников механико-математического факультета.'},
-    {'role': 'user',
-     'content': 'Человек: Сибирское отделение РАН имеет богатую историю.\nБольшая языковая модель: Это так.\nЧеловек: Расскажите о ней.'},
-    {'role': 'assistant', 'content': 'Расскажите о богатой истории Сибирского отделения РАН.'},
-    {'role': 'user',
-     'content': 'Человек: Механико-математический факультет готовит отличных специалистов.\nБольшая языковая модель: Это действительно так.\nЧеловек: Куда?'},
-    {'role': 'assistant', 'content': 'Куда трудоустраиваются выпускники механико-математического факультета?'},
-    {'role': 'user',
-     'content': 'Человек: В Академгородке существуют передовые исследовательские центры.\nБольшая языковая модель: Это абсолютно верно.\nЧеловек: Опишите их.'},
-    {'role': 'assistant', 'content': 'Опишите передовые исследовательские центры Академгородка.'},
-    {'role': 'user',
-     'content': 'Человек: В Новосибирском Академгородке есть крупный научный институт.\nБольшая языковая модель: Да, это Институт математики им. С.Л. Соболева.\nЧеловек: Расскажите о нём подробнее.'},
-    {'role': 'assistant', 'content': 'Расскажите подробнее об Институте математики им. С.Л. Соболева.'},
-    {'role': 'user',
-     'content': 'Человек: Что такое механико-математический факультет?\nБольшая языковая модель: Механико-математический факультет НГУ — это факультет, выпускники которого осуществляют научные исследования и разработки для лучших компаний мира. Студент Механико-математического факультета учится преобразовывать свои разрозненные мысли в четко структурированные рассуждения, обладающие логической стройностью.\nЧеловек: А там есть магистратура?'},
-    {"role": 'assistant', 'content': 'А на механико-математическом факультете есть магистратура?'},
-    {'role': 'user',
-     'content': 'Человек: Когда начинается приём документов в НГУ?\nБольшая языковая модель: Приём документов в НГУ начинается 1 марта – для иностранных граждан и лиц без гражданства и 20 июня – для граждан Российской Федерации.\nЧеловек: А когда он заканчивается?'},
-    {'role': 'assistant', 'content': 'А когда приём документов в НГУ заканчивается?'},
-]
 
 logger: Logger = logging.getLogger(__name__)
 
@@ -222,8 +154,9 @@ async def llm_model_func(prompt: str,
     """
     if history_messages is None:
         history_messages = []
+    effective_model = _current_model_override.get() or settings.llm_model_name
     try:
-        logger.info(f"Sending request to LLM with {len(history_messages)} messages, prompt: {prompt}")
+        logger.info(f"Sending request to LLM (model={effective_model}) with {len(history_messages)} messages, prompt: {prompt}")
         if not stream:
             answer: str = await generate_with_llm(
                 prompt=prompt,
@@ -237,7 +170,7 @@ async def llm_model_func(prompt: str,
             return answer
 
         result = await openai_complete_if_cache(
-            model=settings.llm_model_name,
+            model=effective_model,
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
@@ -271,13 +204,14 @@ async def generate_with_llm(
 ) -> str:
     if history_messages is None:
         history_messages = []
+    effective_model = _current_model_override.get() or settings.llm_model_name
 
     kwargs.pop("stream", None)
 
     kwargs.pop("enable_cot", None)
 
     result = await openai_complete_if_cache(
-        model=settings.llm_model_name,
+        model=effective_model,
         prompt=prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -569,30 +503,33 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
     """
     try:
         logger.info("Initializing RAG system...")
-        logger.info(f"Loading tokenizer and embedder model: {LOCAL_EMBEDDER_PATH}...")
+        embedder_path = str(LOCAL_EMBEDDER_PATH) if LOCAL_EMBEDDER_PATH else "Alibaba-NLP/gte-multilingual-base"
+        logger.info(f"Loading tokenizer and embedder model: {embedder_path}...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_EMBEDDER_PATH,
+            embedder_path,
         )
         emb_model = AutoModel.from_pretrained(
-            str(LOCAL_EMBEDDER_PATH),
+            embedder_path,
             trust_remote_code=True,
             # device_map='cuda:0'
             device_map='cpu',
         )
         emb_model.eval()
-        logger.info(f"Model {LOCAL_EMBEDDER_PATH} loaded successfully")
+        logger.info(f"Model {embedder_path} loaded successfully")
 
-        logger.info(f"Loading tokenizer and reranker model: {LOCAL_RERANKER_PATH}...")
+        reranker_path = str(
+            LOCAL_RERANKER_PATH) if LOCAL_RERANKER_PATH else "Alibaba-NLP/gte-multilingual-reranker-base"
+        logger.info(f"Loading tokenizer and reranker model: {reranker_path}...")
         reranker_tokenizer = AutoTokenizer.from_pretrained(
-            LOCAL_RERANKER_PATH
+            reranker_path
         )
         reranker_model = AutoModelForSequenceClassification.from_pretrained(
-            str(LOCAL_RERANKER_PATH),
+            reranker_path,
             trust_remote_code=True,
             device_map='cpu',
         )
         reranker_model.eval()
-        logger.info(f"Reranker {LOCAL_RERANKER_PATH} loaded successfully")
+        logger.info(f"Reranker {reranker_path} loaded successfully")
 
         global _reranker_tokenizer, _reranker_model
         _reranker_tokenizer = reranker_tokenizer
@@ -601,6 +538,31 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         logger.info("Initializing shared data and pipeline status...")
         initialize_share_data()
         await initialize_pipeline_status()
+
+        token_cls = AutoModelForTokenClassification.from_pretrained(
+            embedder_path, trust_remote_code=True, device_map='cuda' if torch.cuda.is_available() else 'cpu'
+        )
+        token_cls.eval()
+        embedder: GTEEmbedding = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
+
+        chunk_db, bm25 = await build_chunks_db_and_bm25(str(WORKING_DIR))
+        logger2: Logger = logging.getLogger("links")
+        logger2.debug("RAG init: chunks=%d", len(chunk_db))
+        try:
+            logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
+        except Exception:
+            pass
+
+        if settings.rag_engine_type == "zvec":
+            from meno_core.core.zvec_rag import ZvecRAGEngine
+            logger.info("Using ZVEC engine.")
+            engine: Union["ZvecRAGEngine", "LightRAGEngine"] = ZvecRAGEngine(
+                working_dir=str(WORKING_DIR),
+                embedder=embedder,
+                bm25=bm25,
+                chunk_db=chunk_db
+            )
+            return engine, embedder, bm25, chunk_db
 
         logger.info("Creating LightRAG instance...")
         rag: LightRAG = LightRAG(
@@ -627,21 +589,15 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         logger.info("Initializing RAG storages...")
         await rag.initialize_storages()
         logger.info("RAG system initialized successfully")
-        token_cls = AutoModelForTokenClassification.from_pretrained(
-            str(LOCAL_EMBEDDER_PATH), trust_remote_code=True, device_map='cpu'
+
+        from meno_core.core.lightrag_engine import LightRAGEngine
+        engine = LightRAGEngine(
+            rag_instance=rag,
+            embedder=embedder,
+            bm25=bm25,
+            chunk_db=chunk_db
         )
-        token_cls.eval()
-        embedder: GTEEmbedding = GTEEmbedding(emb_tokenizer, token_cls, normalized=True)
-
-        chunk_db, bm25 = await build_chunks_db_and_bm25(str(WORKING_DIR))
-        logger2: Logger = logging.getLogger("links")
-        logger2.debug("RAG init: chunks=%d", len(chunk_db))
-        try:
-            logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
-        except Exception:
-            pass
-
-        return rag, embedder, bm25, chunk_db
+        return engine, embedder, bm25, chunk_db
     except Exception as e:
         logger.error(f"Error initializing RAG: {str(e)}", exc_info=True)
         raise
@@ -701,6 +657,10 @@ async def build_chunks_db_and_bm25(working_dir: Union[str, Path]):
         working_dir_str = working_dir
 
     chunks_path = Path(working_dir_str) / "kv_store_text_chunks.json"
+    if not chunks_path.exists():
+        logger.warning(f"Chunk database not found at {chunks_path}. Initializing empty.")
+        return {}, BM25Okapi([["dummy"]])
+
     with chunks_path.open("r", encoding="utf-8") as fp:
         raw = json.load(fp)
     # [(content, full_doc_id)]

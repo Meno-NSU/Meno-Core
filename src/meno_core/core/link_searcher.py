@@ -51,14 +51,19 @@ class LinkSearcher:
         )
 
         urls_path = Path(urls_path)
-        with urls_path.open(mode='r', encoding='utf-8') as fp:
-            self.header2url = json.load(fp)
+        try:
+            with urls_path.open(mode='r', encoding='utf-8') as fp:
+                self.urls: dict[str, str] = json.load(fp)
+            self.logger.debug(f"LinkSearcher: Loaded {len(self.urls)} validated URLs")
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.logger.warning(f"LinkSearcher: Error reading {urls_path}. Initializing with empty URL mapping.")
+            self.urls = {}
 
         # doc_id -> url (строим по заголовкам чанков)
         self.docid2url: dict[str, str] = {}
         for content, full_doc_id in self.chunk_db:
             header = content.split("\n", 1)[0]
-            url = self.header2url.get(header)
+            url = self.urls.get(header)
             if url and full_doc_id not in self.docid2url:
                 self.docid2url[full_doc_id.split("_chunk")[0]] = url
 

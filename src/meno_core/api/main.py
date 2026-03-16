@@ -11,28 +11,32 @@ import time
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime
 from logging import Logger, Formatter
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Dict, Optional, Union, AsyncIterator, Any
 from typing import Literal, Tuple
 
-import pytz  # type: ignore[import-untyped]
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
-from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from lightrag import QueryParam, LightRAG  # type: ignore[import-untyped]
+from lightrag import QueryParam  # type: ignore[import-untyped]
 from lightrag.utils import setup_logger  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
 from meno_core.config.settings import settings
+from meno_core.core.lightrag_engine import LightRAGEngine
 from meno_core.core.link_correcter import LinkCorrecter
 from meno_core.core.link_searcher import LinkSearcher
-from meno_core.core.rag_engine import initialize_rag, SYSTEM_PROMPT_FOR_MENO, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K
+from meno_core.core.rag_engine import initialize_rag, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
+    explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K, \
+    _current_model_override
+from meno_core.core.prompts import SYSTEM_PROMPT_FOR_MENO
+from meno_core.core.vllm_registry import VLLMRegistry
+from meno_core.core.zvec_rag import ZvecRAGEngine
 from meno_core.infrastructure.logdb.log_collector import LogCollector
+from meno_core.api.arena import arena_router
 
 QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
 
@@ -80,27 +84,26 @@ def setup_links_logger(path: str, level: str = "DEBUG",
     return links_logger
 
 
-async def clear_rag_cache():
-    """Clear LightRAG cache"""
-    try:
-        current_time: datetime = datetime.now(pytz.timezone("Asia/Novosibirsk"))
-        logger.info(
-            f"⏰ Clearing cache at: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-
-        await rag_instance.aclear_cache()
-        logger.info("✅ LightRAG cache cleared successfully")
-    except Exception as clear_cache_error:
-        logger.error(f"❌ Failed to clear cache: {str(clear_cache_error)}")
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler
+    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler, embedder_instance, bm25_instance, chunk_db_instance, vllm_registry, chunk_rag_orchestrator
     links_logger: Logger = setup_links_logger(
         LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
     )
     setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
-    rag_instance, embedder, bm25, chunk_db = await initialize_rag()
+    rag_instance, embedder_instance, bm25_instance, chunk_db_instance = await initialize_rag()
+    
+    from meno_core.core.rag.factory import build_chunk_rag_orchestrator
+    # We point to resources/chunk_rag_data where our init script builds the offline models
+    chunk_rag_data_path = Path("resources/chunk_rag_data")
+    chunk_rag_orchestrator = await build_chunk_rag_orchestrator(
+        working_dir=chunk_rag_data_path,
+        embedder=embedder_instance
+    )
+    if chunk_rag_orchestrator:
+        logger.info("⚡ ChunkRAG mode enabled globally.")
+        
+    logger.info("Background thread setup logic finished.")
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     if settings.enable_links_addition:
         ref_searcher = LinkSearcher(
@@ -109,9 +112,9 @@ async def lifespan(_: FastAPI):
             top_k=settings.top_k,
             dist_threshold=settings.dist_threshold,  # для совместимости
             max_links=settings.max_links,
-            embedder=embedder,
-            bm25=bm25,
-            chunk_db=chunk_db,
+            embedder=embedder_instance,
+            bm25=bm25_instance,
+            chunk_db=chunk_db_instance,
             dense_weight=getattr(settings, "dense_weight", 1.0),
             sparse_weight=getattr(settings, "sparse_weight", 0.22),
             hybrid_similarity_threshold=getattr(settings, "hybrid_similarity_threshold", 2.6),
@@ -123,11 +126,6 @@ async def lifespan(_: FastAPI):
     scheduler = AsyncIOScheduler(timezone="Asia/Novosibirsk")  # timezone
     # Clear cache daily at 00:00
     if scheduler is not None:
-        scheduler.add_job(
-            clear_rag_cache,
-            trigger=CronTrigger(hour=0, minute=0),
-            name="clear_rag_cache_daily"
-        )
         scheduler.start()
         logger.info("⏰ Cache-clearing scheduler started")
     try:
@@ -139,6 +137,33 @@ async def lifespan(_: FastAPI):
     except Exception as load_abbreviations_error:
         logger.exception("Unable to load abbreviations", exc_info=load_abbreviations_error)
 
+    _vllm_endpoint_list = [ep.strip() for ep in settings.vllm_endpoints.split(",") if ep.strip()]
+    if _vllm_endpoint_list:
+        vllm_registry = VLLMRegistry(_vllm_endpoint_list)
+        try:
+            models = await vllm_registry.discover()
+            logger.info("🔍 Discovered %d model(s) across %d vLLM endpoint(s)",
+                        len(models), len(_vllm_endpoint_list))
+            if models:
+                available_ids = [m["id"] for m in models]
+                # Verify the configured model name actually exists on the endpoint.
+                # If it is missing (or not set at all), fall back to the first real model.
+                if settings.llm_model_name not in available_ids:
+                    resolved = available_ids[0]
+                    logger.warning(
+                        "⚠️  LLM_MODEL_NAME='%s' is not available on vLLM "
+                        "(available: %s). Overriding with '%s'.",
+                        settings.llm_model_name, available_ids, resolved,
+                    )
+                    settings.llm_model_name = resolved
+                else:
+                    logger.info("✅ Configured model '%s' confirmed on vLLM.",
+                                settings.llm_model_name)
+        except Exception as vllm_err:
+            logger.warning("vLLM discovery failed at startup: %s", vllm_err)
+    else:
+        logger.info("No VLLM_ENDPOINTS configured — model list will use fallback")
+
     yield  # <-- здесь FastAPI продолжает работу
     # Здесь можно вызвать await rag_instance.cleanup(), если нужно
     # Shutdown scheduler on app exit
@@ -149,16 +174,29 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     new_app = FastAPI(lifespan=lifespan)
+    new_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     return new_app
 
 
 app = create_app()
+app.include_router(arena_router)
 
-rag_instance: Optional[LightRAG] = None
+rag_instance: Optional[Union[LightRAGEngine, ZvecRAGEngine]] = None
+embedder_instance = None
+bm25_instance = None
+chunk_db_instance = None
 abbreviations: Dict[str, str] = {}
 ref_searcher: Optional[LinkSearcher] = None
 ref_corrector: Optional[LinkCorrecter] = None
 scheduler: Optional[AsyncIOScheduler] = None
+vllm_registry: Optional[VLLMRegistry] = None
+chunk_rag_orchestrator = None
 
 
 class ResetRequest(BaseModel):
@@ -196,6 +234,12 @@ class OAIChatCompletionsRequest(BaseModel):
     top_p: Optional[float] = None
     stop: Optional[Union[str, List[str]]] = None
     user: Optional[str] = None
+    knowledge_base: Optional[str] = None
+    knowledge_base_id: Optional[str] = None
+
+    model_config = {
+        "extra": "allow"
+    }
 
 
 async def _build_prompt_and_history(messages: List[OAIMsg]) -> Tuple[str, str, List[Dict[str, str]]]:
@@ -224,11 +268,36 @@ _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*}", re.MULTILINE)
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: OAIChatCompletionsRequest):
-    if rag_instance is None:
+    if rag_instance is None and chunk_rag_orchestrator is None:
         raise RuntimeError("RAG is not initialized.")
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
     model_id: str = request.model or "menon-1"
+
+    if vllm_registry is not None:
+        if not await vllm_registry.is_valid_model(model_id):
+            available_models = [m["id"] for m in await vllm_registry.list_models()]
+            logger.warning(
+                "Rejected request for unknown model '%s'. Available: %s",
+                model_id, available_models,
+            )
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": (
+                            f"Model '{model_id}' is not available on this vLLM endpoint. "
+                            f"Available models: {available_models}"
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "model_not_found",
+                        "param": "model",
+                    }
+                },
+            )
+
+    # Set the model override so rag_engine LLM calls use the UI-selected model
+    _current_model_override.set(model_id)
     session_id: str = request.user or f"session-{completion_id}"
 
     try:
@@ -267,32 +336,68 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     collector.update_time(session_id=session_id)
 
     async def run_lightrag():
-        return await rag_instance.aquery(
-            resolved_query,
-            param=QueryParam(
-                mode=QUERY_MODE,
-                top_k=TOP_K,
-                chunk_top_k=CHUNK_TOP_K,
-                max_total_tokens=QUERY_MAX_TOKENS,
-                history_turns=len(history),
-                conversation_history=history,
-                max_entity_tokens=ENTITY_MAX_TOKENS,
-                max_relation_tokens=RELATION_MAX_TOKENS,
-                stream=request.stream,
-            ),
-            system_prompt=formatted_system_prompt
-        )
+        # Override to hook chunk RAG orchestrator if configured appropriately
+        # Or if the user explicitly selected this knowledge base
+        kb_id = getattr(request, "knowledge_base", None) or getattr(request, "knowledge_base_id", None)
+        req_extra = request.model_dump().get("knowledge_base") or request.model_dump().get("kb_id")
+        selected_kb = kb_id or req_extra
+        
+        should_use_chunk_rag = False
+        if chunk_rag_orchestrator:
+            if settings.rag_engine_type == "zvec":
+                should_use_chunk_rag = True
+            elif selected_kb == "chunk-rag-kb":
+                should_use_chunk_rag = True
+
+        if should_use_chunk_rag and chunk_rag_orchestrator:
+            from meno_core.core.rag.models import RagRequest, RagMessage
+            logger.info("Routing query to new Chunk RAG Mode.")
+            
+            # Map history format
+            rag_msgs = []
+            for h in history:
+                rag_msgs.append(RagMessage(role=h["role"], text=h["content"]))
+                
+            chunk_req = RagRequest(question=resolved_query, history=rag_msgs, session_id=session_id)
+            response = await chunk_rag_orchestrator.answer(chunk_req)
+            return response.answer
+        
+        # Legacy callback
+        try:
+            return await rag_instance.aquery(
+                resolved_query,
+                param=QueryParam(
+                    mode=QUERY_MODE,
+                    top_k=TOP_K,
+                    chunk_top_k=CHUNK_TOP_K,
+                    max_total_tokens=QUERY_MAX_TOKENS,
+                    history_turns=len(history),
+                    conversation_history=history,
+                    max_entity_tokens=ENTITY_MAX_TOKENS,
+                    max_relation_tokens=RELATION_MAX_TOKENS,
+                    stream=request.stream,
+                ),
+                system_prompt=formatted_system_prompt
+            )
+        except Exception as e:
+            logger.error(f"Error querying RAG: {e}", exc_info=True)
+            # For non-streaming, re-raise to be caught by the outer try-except
+            # For streaming, this will be caught by the sse_generator's try-except
+            raise
 
     if not request.stream:
         try:
-            result = await run_lightrag()
-            if hasattr(result, "__aiter__"):
+            response = await run_lightrag()  # type: ignore[misc]
+            # Log successful query
+            # The original instruction had a malformed `log_data.update` here.
+            # Assuming the intent was to rename `result` to `response` and keep the logic.
+            if hasattr(response, "__aiter__"):
                 chunks = []
-                async for part in result:
+                async for part in response:
                     if part:
                         chunks.append(str(part))
-                result = "".join(chunks)
-            content = str(result)
+                response = "".join(chunks)
+            content = str(response)
             # prompt_for_first_answer = await rag_instance.aquery(
             #     resolved_query,
             #     param=QueryParam(
@@ -548,12 +653,55 @@ async def image_from_text(req: ImageOnlyRequest):
 
 @app.get("/v1/models")
 async def list_models():
+    if vllm_registry is not None:
+        models = await vllm_registry.list_models()
+        if models:
+            return {"object": "list", "data": models}
+    # Fallback: return the single configured model
+    model_name = settings.llm_model_name or "menon-1"
     return {
         "object": "list",
         "data": [{
-            "id": "menon-1",
+            "id": model_name,
             "object": "model",
             "created": int(time.time()),
             "owned_by": "menon",
         }]
+    }
+
+
+@app.post("/v1/models/refresh")
+async def refresh_models():
+    if vllm_registry is None:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No VLLM_ENDPOINTS configured"},
+        )
+    models = await vllm_registry.refresh()
+    logger.info("🔄 Models refreshed: %d model(s) found", len(models))
+    return {"object": "list", "data": models}
+
+
+@app.get("/v1/knowledge-bases")
+async def list_knowledge_bases():
+    kb_name = "default-kb"
+    if settings.working_dir:
+        kb_name = settings.working_dir.name
+        
+    kbs = [{
+        "id": kb_name,
+        "name": "Основная база знаний (Граф)",
+        "description": "База знаний по умолчанию на основе графов знаний"
+    }]
+    
+    if chunk_rag_orchestrator is not None:
+        kbs.append({
+            "id": "chunk-rag-kb",
+            "name": "Прямой поиск по параграфам (Chunk RAG)",
+            "description": "Использует семантический (zvec) и лексический (BM25) поиск по точным параграфам."
+        })
+        
+    return {
+        "object": "list",
+        "data": kbs
     }

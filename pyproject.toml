@@ -30,6 +30,7 @@ dependencies = [
     "uvicorn>=0.38.0",
     "rapidfuzz>=3.14.3",
     "rank-bm25>=0.2.2",
+    "zvec>=0.2.0",
 ]
 
 [project.scripts]
@@ -48,4 +49,13 @@ dev = [
     "mypy",
     "build",
     "pre-commit",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "W", "F"]
+ignore = [
+    "E501",
 ]
