@@ -11,8 +11,7 @@ import time
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from logging import Logger, Formatter
-from logging.handlers import RotatingFileHandler
+from logging import Logger
 from pathlib import Path
 from typing import List, Dict, Optional, Union, AsyncIterator, Any
 from typing import Literal, Tuple
@@ -22,7 +21,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from lightrag import QueryParam  # type: ignore[import-untyped]
-from lightrag.utils import setup_logger  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
 from meno_core.config.settings import settings
@@ -50,9 +48,12 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger: Logger = logging.getLogger(__name__)
+request_logger: Logger = logging.getLogger("meno_core.request")
+collector: Optional[LogCollector] = None
+_collector_disabled_reason: Optional[str] = None
 
 try:
-    collector: LogCollector = LogCollector()
+    collector = LogCollector()
 except Exception as e:
     logger.exception(f"Failed to initialize LogCollector: {str(e)}")
     pass
@@ -65,22 +66,19 @@ SCORES_CACHE_FILE: str = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
 _scores_cache: Dict[str, Dict[str, Optional[str]]] = {}
 
 
+def _disable_collector(reason: Exception | str) -> None:
+    global collector, _collector_disabled_reason
+    if _collector_disabled_reason is None:
+        _collector_disabled_reason = str(reason)
+        logger.warning("Disabling LogCollector due to runtime failure: %s", _collector_disabled_reason)
+    collector = None
+
+
 def setup_links_logger(path: str, level: str = "DEBUG",
                        max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5) -> logging.Logger:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     links_logger: Logger = logging.getLogger("links")
     links_logger.setLevel(getattr(logging, level.upper(), logging.DEBUG))
-    # чтобы не дублировать записи при hot-reload
-    if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == os.path.abspath(path)
-               for h in links_logger.handlers):
-        fh: RotatingFileHandler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count,
-                                                      encoding="utf-8")
-        fmt: Formatter = logging.Formatter(
-            fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        fh.setFormatter(fmt)
-        links_logger.addHandler(fh)
+    links_logger.propagate = True
     return links_logger
 
 
@@ -90,7 +88,10 @@ async def lifespan(_: FastAPI):
     links_logger: Logger = setup_links_logger(
         LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
     )
-    setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
+    light_rag_logger = logging.getLogger("light_rag_log")
+    light_rag_logger.setLevel(logging.WARNING)
+    light_rag_logger.handlers.clear()
+    light_rag_logger.propagate = True
     rag_instance, embedder_instance, bm25_instance, chunk_db_instance = await initialize_rag()
     
     from meno_core.core.rag.factory import build_chunk_rag_orchestrator
@@ -100,7 +101,7 @@ async def lifespan(_: FastAPI):
     )
     if chunk_rag_orchestrator:
         logger.info("⚡ ChunkRAG mode enabled globally.")
-        
+    logger.info("All backend logs are routed to stdout/stderr; separate file handlers are disabled.")
     logger.info("Background thread setup logic finished.")
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     if settings.enable_links_addition:
@@ -271,6 +272,10 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
     model_id: str = request.model or "menon-1"
+    request_started_at = time.perf_counter()
+    request_timings_ms: Dict[str, float] = {}
+    route_mode = "unknown"
+    route_reason = "unknown"
 
     if vllm_registry is not None:
         if not await vllm_registry.is_valid_model(model_id):
@@ -298,52 +303,71 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     _current_model_override.set(model_id)
     session_id: str = request.user or f"session-{completion_id}"
 
-    try:
-        collector.create_message(session_id=session_id)
-    except Exception as creating_message_error:
-        logger.exception("Failed to create message", exc_info=creating_message_error)
-        pass
+    if collector is not None:
+        try:
+            collector.create_message(session_id=session_id)
+        except Exception as creating_message_error:
+            _disable_collector(creating_message_error)
 
+    prompt_started_at = time.perf_counter()
     formatted_system_prompt, query, history = await _build_prompt_and_history(request.messages)
+    request_timings_ms["prompt_build"] = round((time.perf_counter() - prompt_started_at) * 1000, 2)
 
-    try:
-        collector.add_question(session_id=session_id, text=query)
-    except Exception as adding_question_error:
-        logger.exception("Failed to add question", exc_info=adding_question_error)
-        pass
+    if collector is not None:
+        try:
+            collector.add_question(session_id=session_id, text=query)
+        except Exception as adding_question_error:
+            _disable_collector(adding_question_error)
 
+    expand_started_at = time.perf_counter()
     try:
         expanded_query: str = await explain_abbreviations(query, abbreviations)
 
     except Exception as explain_error:
         logger.exception("Abbreviation explanation failed", exc_info=explain_error)
         expanded_query = query
+    request_timings_ms["expand"] = round((time.perf_counter() - expand_started_at) * 1000, 2)
+
+    resolve_started_at = time.perf_counter()
     try:
         resolved_query: str = await resolve_anaphora(expanded_query, history)
     except Exception as resolve_error:
         logger.exception("Anaphora resolution failed", exc_info=resolve_error)
         resolved_query = expanded_query
+    request_timings_ms["resolve"] = round((time.perf_counter() - resolve_started_at) * 1000, 2)
 
-    try:
-        collector.add_expanded_question(session_id=session_id, text=expanded_query)
-        collector.add_resolved_question(session_id=session_id, text=resolved_query)
-    except Exception as resolve_error:
-        logger.exception("Failed to add expanded/resolved question", exc_info=resolve_error)
-        pass
+    if collector is not None:
+        try:
+            collector.add_expanded_question(session_id=session_id, text=expanded_query)
+            collector.add_resolved_question(session_id=session_id, text=resolved_query)
+        except Exception as collector_update_error:
+            _disable_collector(collector_update_error)
 
-    collector.update_time(session_id=session_id)
+    if collector is not None:
+        try:
+            collector.update_time(session_id=session_id)
+        except Exception as collector_time_error:
+            _disable_collector(collector_time_error)
 
     async def run_lightrag():
+        nonlocal route_mode, route_reason
         # Override to hook chunk RAG orchestrator if configured appropriately
         # Or if the user explicitly selected this knowledge base
         kb_id = getattr(request, "knowledge_base", None) or getattr(request, "knowledge_base_id", None)
         req_extra = request.model_dump().get("knowledge_base") or request.model_dump().get("kb_id")
         selected_kb = kb_id or req_extra
+        legacy_kb_id = settings.working_dir.name if settings.working_dir else "default-kb"
         
         should_use_chunk_rag = False
         route_reason = f"rag_engine_type={settings.rag_engine_type}, selected_kb={selected_kb!r}"
         if chunk_rag_orchestrator:
-            if settings.rag_engine_type == "zvec":
+            if selected_kb == legacy_kb_id:
+                should_use_chunk_rag = False
+                route_reason = f"selected_kb == {legacy_kb_id!r}"
+            elif selected_kb is None:
+                should_use_chunk_rag = True
+                route_reason = "chunk_rag_orchestrator is available and no explicit legacy kb was selected"
+            elif settings.rag_engine_type == "zvec":
                 should_use_chunk_rag = True
                 route_reason = "settings.rag_engine_type == 'zvec'"
             elif selected_kb == "chunk-rag-kb":
@@ -351,6 +375,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 route_reason = "selected_kb == 'chunk-rag-kb'"
 
         if should_use_chunk_rag and chunk_rag_orchestrator:
+            route_mode = "chunk_rag"
             from meno_core.core.rag.models import RagRequest, RagMessage
             logger.info(
                 "Routing request_id=%s session_id=%s to Chunk RAG mode (%s).",
@@ -375,6 +400,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         
         # Legacy callback
         try:
+            route_mode = "legacy_lightrag"
             logger.info(
                 "Routing request_id=%s session_id=%s to legacy LightRAG mode (%s). "
                 "Chunk-RAG retrieval timing logs are not emitted on this path.",
@@ -405,7 +431,9 @@ async def chat_completions(request: OAIChatCompletionsRequest):
 
     if not request.stream:
         try:
+            rag_started_at = time.perf_counter()
             response = await run_lightrag()  # type: ignore[misc]
+            request_timings_ms["rag_query"] = round((time.perf_counter() - rag_started_at) * 1000, 2)
             # Log successful query
             # The original instruction had a malformed `log_data.update` here.
             # Assuming the intent was to rename `result` to `response` and keep the logic.
@@ -441,12 +469,23 @@ async def chat_completions(request: OAIChatCompletionsRequest):
             #     logger.exception("Hallucination scoring failed")
             #     pass
 
-            try:
-                collector.add_model_answer(session_id=session_id, text=content)
-                collector.print_dto(session_id=session_id)
-            except Exception as err:
-                logger.exception("Failed to add model answer", exc_info=err)
-                pass
+            if collector is not None:
+                try:
+                    collector.add_model_answer(session_id=session_id, text=content)
+                except Exception as collector_answer_error:
+                    _disable_collector(collector_answer_error)
+
+            request_logger.info(
+                "request-summary request_id=%s session_id=%s route=%s route_reason=%s total_ms=%.2f stage_ms=%s response_len=%s stream=%s",
+                completion_id,
+                session_id,
+                route_mode,
+                route_reason,
+                (time.perf_counter() - request_started_at) * 1000,
+                request_timings_ms,
+                len(content),
+                request.stream,
+            )
 
         except Exception as non_stream_error:
             logger.exception("chat.completions non-stream error")
@@ -523,9 +562,20 @@ async def chat_completions(request: OAIChatCompletionsRequest):
             if collector is not None:
                 try:
                     collector.add_model_answer(session_id=session_id, text=full_answer)
-                    collector.print_dto(session_id=session_id)
                 except Exception as collector_error:
-                    logger.exception("Failed to add model answer (stream)", exc_info=collector_error)
+                    _disable_collector(collector_error)
+
+            request_logger.info(
+                "request-summary request_id=%s session_id=%s route=%s route_reason=%s total_ms=%.2f stage_ms=%s response_len=%s stream=%s",
+                completion_id,
+                session_id,
+                route_mode,
+                route_reason,
+                (time.perf_counter() - request_started_at) * 1000,
+                request_timings_ms,
+                len(full_answer),
+                request.stream,
+            )
 
         except Exception as stream_error:
             logger.exception("chat.completions stream error")
@@ -706,18 +756,19 @@ async def list_knowledge_bases():
     if settings.working_dir:
         kb_name = settings.working_dir.name
         
-    kbs = [{
-        "id": kb_name,
-        "name": "Граф знаний",
-        "description": "База знаний по умолчанию на основе графа знаний"
-    }]
-    
+    kbs = []
     if chunk_rag_orchestrator is not None:
         kbs.append({
             "id": "chunk-rag-kb",
             "name": "Векторный поиск",
-            "description": "Использует семантический (zvec) и лексический (BM25) поиск по текстовым чанкам"
+            "description": "Основной режим: семантический (dense) и лексический (BM25) поиск по текстовым чанкам"
         })
+
+    kbs.append({
+        "id": kb_name,
+        "name": "Граф знаний",
+        "description": "Legacy fallback на основе графа знаний LightRAG"
+    })
         
     return {
         "object": "list",

@@ -14,7 +14,7 @@ class LogCollector:
         self._unreleased_dtos: dict[str, BackEndDTO] = {}
 
         self._db_url = 'postgresql://logdb:123@localhost:5432/logdb'  # пока захардкодил
-        self._db_engine = create_engine(self._db_url, echo=True)
+        self._db_engine = create_engine(self._db_url, echo=False)
 
         Session = sessionmaker(bind=self._db_engine)  # тут надо с менеджером контекстным
         self._session = Session()
