@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Optional, List
+from typing import List
 
 from meno_core.core.rag.models import QueryRepresentations, RagMessage
 from meno_core.core.rag.prompts import QUERY_REWRITE_SYSTEM_PROMPT
@@ -10,10 +10,44 @@ from meno_core.core.rag_engine import generate_with_llm
 logger = logging.getLogger(__name__)
 
 
+def _parse_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return default
+
+
+def _parse_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        normalized = item.strip()
+        if normalized:
+            result.append(normalized)
+    return result
+
+
+def _safe_text(value: object, fallback: str) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return fallback
+
+
 def extract_json_from_text(text: str) -> dict:
     """
     Attempts to extract and parse a JSON object from a potentially messy LLM output string.
     """
+    if not isinstance(text, str) or not text.strip():
+        return {}
+
     # Try finding markdown code block
     json_block_re = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
     match = json_block_re.search(text)
@@ -22,18 +56,18 @@ def extract_json_from_text(text: str) -> dict:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-            
-    # Try finding highest level balanced curly braces
-    json_obj_re = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
-    match = json_obj_re.search(text)
-    if match:
+
+    decoder = json.JSONDecoder()
+    for start in (idx for idx, char in enumerate(text) if char == "{"):
         try:
-            return json.loads(match.group(0))
+            parsed, _ = decoder.raw_decode(text[start:])
         except json.JSONDecodeError:
-            pass
-            
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
     # Fallback to empty if nothing works
-    logger.warning(f"Could not parse valid JSON from LLM output: {text}")
+    logger.warning("Could not parse valid JSON from LLM output (length=%s)", len(text))
     return {}
 
 
@@ -67,14 +101,20 @@ class QueryProcessor:
             json_response = extract_json_from_text(response_text)
             
             # Construct the Pydantic representations object, mapping missing keys safely
+            rewritten_query = _safe_text(json_response.get("rewritten_query"), query)
+            resolved_coreferences = _safe_text(json_response.get("resolved_coreferences"), rewritten_query)
+            search_queries = _parse_string_list(json_response.get("search_queries"))
+            if not search_queries:
+                search_queries = [rewritten_query]
+
             representations = QueryRepresentations(
                 original_query=query,
-                rewritten_query=json_response.get("rewritten_query", query),
-                resolved_coreferences=json_response.get("resolved_coreferences", query),
-                expanded_abbreviations=json_response.get("expanded_abbreviations", []),
-                search_queries=json_response.get("search_queries", [query]),
-                hypothetical_document=json_response.get("hypothetical_document", ""),
-                is_meaningful=json_response.get("is_meaningful", True)
+                rewritten_query=rewritten_query,
+                resolved_coreferences=resolved_coreferences,
+                expanded_abbreviations=_parse_string_list(json_response.get("expanded_abbreviations")),
+                search_queries=search_queries,
+                hypothetical_document=_safe_text(json_response.get("hypothetical_document"), ""),
+                is_meaningful=_parse_bool(json_response.get("is_meaningful"), True)
             )
             return representations
             

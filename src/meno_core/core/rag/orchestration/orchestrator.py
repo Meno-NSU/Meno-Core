@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import time
 from typing import Any, Dict, List
@@ -6,9 +5,9 @@ from typing import Any, Dict, List
 from meno_core.core.rag.config import ChunkRagConfig
 from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.fusion.merger import HybridFusion
-from meno_core.core.rag.generation.context_assembler import ContextAssembler
+from meno_core.core.rag.generation.context_assembler import ContextAssembler, estimate_tokens
 from meno_core.core.rag.generation.generator import AnswerGenerator
-from meno_core.core.rag.models import RagDebugInfo, RagRequest, RagResponse, RetrievedChunk
+from meno_core.core.rag.models import QueryRepresentations, RagDebugInfo, RagRequest, RagResponse, RetrievedChunk
 from meno_core.core.rag.query_processor import QueryProcessor
 from meno_core.core.rag.rerank.qwen_reranker import QwenCausalReranker
 from meno_core.core.rag.retrieval.base import BaseRetriever
@@ -56,16 +55,16 @@ class ChunkRagOrchestrator:
             hallucination_threshold=self.config.hallucination_threshold,
         )
 
-    async def _timed_retrieve(
+    async def _timed_retrieve_many(
         self,
         source_name: str,
-        query: str,
+        queries: List[str],
         retriever: BaseRetriever,
         top_k: int,
-    ) -> tuple[str, str, list[RetrievedChunk], float, int]:
+    ) -> tuple[str, List[str], list[list[RetrievedChunk]], float, int]:
         started_at = time.perf_counter()
-        result = await retriever.retrieve(query, top_k)
-        return source_name, query, result, round((time.perf_counter() - started_at) * 1000, 2), top_k
+        result = await retriever.retrieve_many(queries, top_k)
+        return source_name, queries, result, round((time.perf_counter() - started_at) * 1000, 2), top_k
 
     async def answer(self, request: RagRequest) -> RagResponse:
         start_time = time.time()
@@ -87,7 +86,7 @@ class ChunkRagOrchestrator:
             if self.config.rewrite_enabled:
                 representations = await self.query_processor.process_query(request.question, request.history)
             else:
-                representations = await self.query_processor.process_query(request.question, [])
+                representations = self._build_passthrough_representations(request.question)
 
             telemetry["steps_latency_ms"]["query_rewrite"] = round((time.time() - step_start) * 1000, 2)
             debug_info.rewritten_query = representations.rewritten_query
@@ -110,31 +109,19 @@ class ChunkRagOrchestrator:
                 )
 
             step_start = time.time()
-            shared_queries = self._stable_unique(
-                [request.question, representations.resolved_coreferences] + representations.search_queries
-            )
-            dense_queries = list(shared_queries)
-            if self.config.hypothetical_doc_enabled and representations.hypothetical_document:
-                dense_queries = self._stable_unique(dense_queries + [representations.hypothetical_document])
-
-            retrieval_requests: list[asyncio.Future] = []
+            dense_queries, lexical_queries = self._build_retrieval_queries(request.question, representations)
+            retrieval_batches = []
             for source_name, retriever in self.dense_retrievers.items():
                 top_k = (
                     self.config.top_k_dense_multilingual
                     if source_name == "multilingual_dense"
                     else self.config.top_k_dense_russian
                 )
-                for query in dense_queries:
-                    retrieval_requests.append(self._timed_retrieve(source_name, query, retriever, top_k))
-
-            for query in shared_queries:
-                retrieval_requests.append(
-                    self._timed_retrieve("lexical", query, self.lexical_retriever, self.config.top_k_bm25)
+                retrieval_batches.append(
+                    await self._timed_retrieve_many(source_name, dense_queries, retriever, top_k)
                 )
-
-            raw_results = await asyncio.gather(
-                *retrieval_requests,
-                return_exceptions=True,
+            retrieval_batches.append(
+                await self._timed_retrieve_many("lexical", lexical_queries, self.lexical_retriever, self.config.top_k_bm25)
             )
 
             grouped_results: Dict[str, List[List[RetrievedChunk]]] = {
@@ -154,61 +141,64 @@ class ChunkRagOrchestrator:
                     "lexical": [],
                 }
 
-            for result in raw_results:
-                if isinstance(result, Exception):
-                    logger.error("Retriever failed: %s", result, exc_info=result)
-                    continue
-
-                source_name, query, retrieved_chunks, latency_ms, top_k = result
-
-                grouped_results[source_name].append(retrieved_chunks)
-                retrieval_latency_entries[source_name].append(
-                    {
-                        "query": query,
-                        "top_k": top_k,
-                        "latency_ms": latency_ms,
-                        "hits": len(retrieved_chunks),
-                    }
-                )
-                if self.config.debug_retrieval:
-                    telemetry["retrieval_previews"][source_name].append(
+            for source_name, queries, batch_results, latency_ms, top_k in retrieval_batches:
+                grouped_results[source_name].extend(batch_results)
+                query_entries = []
+                for query, retrieved_chunks in zip(queries, batch_results):
+                    query_entries.append(
                         {
                             "query": query,
-                            "hits": build_retrieved_chunk_preview(retrieved_chunks, self.config.retrieval_preview_k),
+                            "top_k": top_k,
+                            "hits": len(retrieved_chunks),
                         }
                     )
+                    if self.config.debug_retrieval:
+                        telemetry["retrieval_previews"][source_name].append(
+                            {
+                                "query": query,
+                                "hits": build_retrieved_chunk_preview(retrieved_chunks, self.config.retrieval_preview_k),
+                            }
+                        )
+                retrieval_latency_entries[source_name].append(
+                    {
+                        "queries": query_entries,
+                        "latency_ms": latency_ms,
+                        "batch_size": len(queries),
+                        "top_k": top_k,
+                    }
+                )
 
-            pooled_results = {
-                source_name: self._flatten_and_deduplicate(results)
+            pooled_counts = {
+                source_name: len(self._flatten_and_deduplicate(results))
                 for source_name, results in grouped_results.items()
             }
             telemetry["steps_latency_ms"]["retrieval"] = round((time.time() - step_start) * 1000, 2)
-            telemetry["retrieved_counts"] = {
-                source_name: len(results)
-                for source_name, results in pooled_results.items()
-            }
+            telemetry["retrieved_counts"] = pooled_counts
             telemetry["retrieval_latency_ms"] = retrieval_latency_entries
             telemetry["retrieval_latency_summary_ms"] = {
                 source_name: {
                     "total_ms": round(sum(item["latency_ms"] for item in entries), 2),
                     "max_ms": round(max((item["latency_ms"] for item in entries), default=0.0), 2),
                     "calls": len(entries),
+                    "batch_sizes": [item["batch_size"] for item in entries],
                 }
                 for source_name, entries in retrieval_latency_entries.items()
             }
+            telemetry["retrieval_call_count"] = sum(len(entries) for entries in retrieval_latency_entries.values())
             if self.config.debug_retrieval:
                 retrieval_logger.info(
                     "retrieval-summary question=%r dense_queries=%s lexical_queries=%s latency_summary_ms=%s retrieved_counts=%s",
                     request.question,
                     len(dense_queries),
-                    len(shared_queries),
+                    len(lexical_queries),
                     telemetry["retrieval_latency_summary_ms"],
                     telemetry["retrieved_counts"],
                 )
 
             step_start = time.time()
-            fusion_result = self.fusion.fuse(pooled_results, top_k=self.config.top_k_after_fusion)
+            fusion_result = self.fusion.fuse(grouped_results, top_k=self.config.top_k_after_fusion)
             telemetry["steps_latency_ms"]["fusion"] = round((time.time() - step_start) * 1000, 2)
+            telemetry["fusion_candidate_count"] = len(fusion_result.chunks)
             if self.config.debug_retrieval:
                 telemetry["fused_preview"] = fusion_result.fused_preview
 
@@ -219,12 +209,15 @@ class ChunkRagOrchestrator:
                 top_n=self.config.top_n_after_rerank,
             )
             telemetry["steps_latency_ms"]["rerank"] = round((time.time() - step_start) * 1000, 2)
+            telemetry["rerank_candidate_count"] = len(fusion_result.chunks)
+            telemetry["rerank_kept_count"] = len(rerank_result.reranked_chunks)
             if self.config.debug_retrieval:
                 telemetry["rerank_preview"] = rerank_result.preview
 
             step_start = time.time()
             context_str, sources = self.assembler.assemble(rerank_result.reranked_chunks)
             telemetry["steps_latency_ms"]["context_assembly"] = round((time.time() - step_start) * 1000, 2)
+            telemetry["context_token_count"] = estimate_tokens(context_str) if context_str else 0
 
             step_start = time.time()
             answer_text, insuff_flag = await self.generator.generate_answer(
@@ -246,7 +239,7 @@ class ChunkRagOrchestrator:
                 telemetry["retrieval_latency_summary_ms"],
                 telemetry["retrieved_counts"],
                 len(dense_queries),
-                len(shared_queries),
+                len(lexical_queries),
                 len(sources),
                 insuff_flag,
             )
@@ -270,6 +263,40 @@ class ChunkRagOrchestrator:
                 answer="Произошла системная ошибка при обработке вашего запроса.",
                 insufficient_information=True,
             )
+
+    @staticmethod
+    def _build_passthrough_representations(question: str) -> QueryRepresentations:
+        return QueryRepresentations(
+            original_query=question,
+            rewritten_query=question,
+            resolved_coreferences=question,
+            search_queries=[question],
+            hypothetical_document="",
+            is_meaningful=True,
+        )
+
+    @classmethod
+    def _build_retrieval_queries(
+        cls,
+        original_question: str,
+        representations: QueryRepresentations,
+    ) -> tuple[list[str], list[str]]:
+        search_queries = cls._stable_unique(representations.search_queries)[:2]
+        lexical_queries = cls._stable_unique(
+            [
+                representations.rewritten_query,
+                representations.resolved_coreferences,
+                *search_queries,
+            ]
+        )
+        dense_queries = list(lexical_queries)
+        if representations.hypothetical_document:
+            dense_queries = cls._stable_unique(dense_queries + [representations.hypothetical_document])
+        if not dense_queries:
+            dense_queries = [original_question]
+        if not lexical_queries:
+            lexical_queries = [original_question]
+        return dense_queries, lexical_queries
 
     @staticmethod
     def _stable_unique(items: List[str]) -> List[str]:

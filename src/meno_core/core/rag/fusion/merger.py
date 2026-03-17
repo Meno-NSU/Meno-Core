@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, Iterable, List, Sequence
 
 from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.models import RetrievedChunk
@@ -16,62 +16,47 @@ class FusionResult:
 
 class HybridFusion:
     """
-    Merges results from multiple retrievers using Weighted Sum with min-max normalisation.
+    Merges results from multiple retrievers using weighted Reciprocal Rank Fusion (RRF).
     """
 
-    def __init__(self, weights: Dict[str, float], preview_k: int = 5):
+    def __init__(self, weights: Dict[str, float], preview_k: int = 5, rank_constant: int = 60):
         self.weights = weights
         self.preview_k = preview_k
+        self.rank_constant = rank_constant
 
-    def _normalize_scores(self, chunks: List[RetrievedChunk]) -> Dict[str, float]:
-        """
-        Applies min-max normalization to scores.
-        """
-        if not chunks:
-            return {}
-            
-        scores = [c.score for c in chunks]
-        min_score = min(scores)
-        max_score = max(scores)
-        
-        normalized = {}
-        for c in chunks:
-            # Avoid division by zero if all scores are exactly the same
-            if max_score > min_score:
-                norm_v = (c.score - min_score) / (max_score - min_score)
-            else:
-                norm_v = 1.0  # Or 0.5, but 1.0 keeps it in play
-            normalized[c.chunk.chunk_id] = norm_v
-            
-        return normalized
+    @staticmethod
+    def _as_ranked_lists(
+        ranked_results: Sequence[RetrievedChunk] | Sequence[Sequence[RetrievedChunk]],
+    ) -> Iterable[Sequence[RetrievedChunk]]:
+        if not ranked_results:
+            return []
+        first_item = ranked_results[0]
+        if isinstance(first_item, RetrievedChunk):
+            return [ranked_results]  # type: ignore[list-item]
+        return ranked_results  # type: ignore[return-value]
 
     def fuse(
         self,
-        result_sets: Dict[str, List[RetrievedChunk]],
+        result_sets: Dict[str, Sequence[RetrievedChunk] | Sequence[Sequence[RetrievedChunk]]],
         top_k: int
     ) -> FusionResult:
         """
-        Perform min-max normalization independently on each source, then sum the weighted values.
+        Perform weighted Reciprocal Rank Fusion across retrievers and query variants.
         """
-        normalized_scores = {
-            source_name: self._normalize_scores(chunks)
-            for source_name, chunks in result_sets.items()
-        }
+        chunk_map: dict[str, RetrievedChunk] = {}
+        fused_scores: dict[str, float] = {}
 
-        # Build union map chunk_id -> Chunk
-        # Store max of (raw chunks) to preserve metadata
-        chunk_map = {}
-        for chunks in result_sets.values():
-            for chunk_wrapper in chunks:
-                chunk_map[chunk_wrapper.chunk.chunk_id] = chunk_wrapper.chunk
-
-        # Calculate fused scores
-        fused_scores = {}
-        for cid in chunk_map.keys():
-            fused_scores[cid] = sum(
-                normalized_scores.get(source_name, {}).get(cid, 0.0) * self.weights.get(source_name, 0.0)
-                for source_name in result_sets.keys()
-            )
+        for source_name, ranked_groups in result_sets.items():
+            source_weight = self.weights.get(source_name, 0.0)
+            if source_weight <= 0:
+                continue
+            for ranked_chunks in self._as_ranked_lists(ranked_groups):
+                for rank, chunk_wrapper in enumerate(ranked_chunks, start=1):
+                    chunk_id = chunk_wrapper.chunk.chunk_id
+                    chunk_map[chunk_id] = chunk_wrapper
+                    fused_scores[chunk_id] = fused_scores.get(chunk_id, 0.0) + (
+                        source_weight / (self.rank_constant + rank)
+                    )
 
         # Sort by best combined score
         sorted_pairs = sorted(fused_scores.items(), key=lambda x: -x[1])[:top_k]
@@ -79,9 +64,10 @@ class HybridFusion:
         # Convert back to RetrievedChunk models
         final_results = []
         for cid, score in sorted_pairs:
+            chunk_wrapper = chunk_map[cid]
             final_results.append(
                 RetrievedChunk(
-                    chunk=chunk_map[cid],
+                    chunk=chunk_wrapper.chunk,
                     score=score,
                     source="hybrid"
                 )

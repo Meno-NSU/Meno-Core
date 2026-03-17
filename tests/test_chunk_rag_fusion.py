@@ -17,7 +17,7 @@ def _chunk(chunk_id: str) -> Chunk:
     )
 
 
-def test_hybrid_fusion_normalizes_each_retriever_and_applies_weights():
+def test_hybrid_fusion_rrf_rewards_multi_source_support_over_singleton_hits():
     chunk_a = _chunk("chunk-a")
     chunk_b = _chunk("chunk-b")
     chunk_c = _chunk("chunk-c")
@@ -34,22 +34,27 @@ def test_hybrid_fusion_normalizes_each_retriever_and_applies_weights():
     result = fusion.fuse(
         {
             "multilingual_dense": [
-                RetrievedChunk(chunk=chunk_a, score=0.2, source="multilingual_dense"),
-                RetrievedChunk(chunk=chunk_b, score=0.9, source="multilingual_dense"),
+                [
+                    RetrievedChunk(chunk=chunk_a, score=0.9, source="multilingual_dense"),
+                    RetrievedChunk(chunk=chunk_b, score=0.8, source="multilingual_dense"),
+                ]
             ],
             "russian_dense": [
-                RetrievedChunk(chunk=chunk_a, score=0.7, source="russian_dense"),
-                RetrievedChunk(chunk=chunk_c, score=0.1, source="russian_dense"),
+                [
+                    RetrievedChunk(chunk=chunk_b, score=0.95, source="russian_dense"),
+                    RetrievedChunk(chunk=chunk_a, score=0.7, source="russian_dense"),
+                ]
             ],
             "lexical": [
-                RetrievedChunk(chunk=chunk_c, score=10.0, source="lexical"),
+                [
+                    RetrievedChunk(chunk=chunk_c, score=10.0, source="lexical"),
+                ],
             ],
         },
         top_k=3,
     )
 
-    assert [item.chunk.chunk_id for item in result.chunks] == ["chunk-b", "chunk-a", "chunk-c"]
-    assert result.chunks[0].score == 0.5
-    assert result.chunks[1].score == 0.3
-    assert result.chunks[2].score == 0.2
-    assert result.fused_preview[0]["chunk_id"] == "chunk-b"
+    assert [item.chunk.chunk_id for item in result.chunks] == ["chunk-a", "chunk-b", "chunk-c"]
+    assert result.chunks[0].score > result.chunks[2].score
+    assert result.chunks[1].score > result.chunks[2].score
+    assert result.fused_preview[0]["chunk_id"] == "chunk-a"

@@ -292,7 +292,7 @@ class Indexer:
             self.manifest_path,
         )
 
-    def load_indexes(self) -> Tuple[Dict[str, Any], BM25Okapi, dict, dict]:
+    def load_indexes(self) -> Tuple[Dict[str, Any], BM25Okapi, dict[str, Chunk], dict]:
         """
         Loads the dense collections, BM25 object, metadata dictionary, and manifest.
         """
@@ -300,7 +300,7 @@ class Indexer:
             raise FileNotFoundError("Chunk RAG indexes are missing or incompatible with current settings")
 
         with self.chunks_meta_path.open("r", encoding="utf-8") as fp:
-            chunk_metadata_dict = json.load(fp)
+            raw_chunk_metadata = json.load(fp)
 
         with self.bm25_path.open("rb") as fp:
             bm25 = pickle.load(fp)
@@ -311,6 +311,11 @@ class Indexer:
         collections = {
             source_name: zvec.open(path=str(path))
             for source_name, path in self.zvec_paths.items()
+        }
+
+        chunk_metadata_dict = {
+            doc_id: Chunk.model_validate(raw_chunk)
+            for doc_id, raw_chunk in raw_chunk_metadata.items()
         }
 
         return collections, bm25, chunk_metadata_dict, manifest
