@@ -44,6 +44,8 @@ class QwenRerankerBackend:
         if self.tokenizer.pad_token is None and self.tokenizer.eos_token is not None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.padding_side = "left"
+        if hasattr(self.tokenizer, "deprecation_warnings"):
+            self.tokenizer.deprecation_warnings["Asking-to-pad-a-fast-tokenizer"] = True
 
         self.prefix_tokens = self.tokenizer(
             "<|im_start|>system\nJudge whether the Document is relevant to the Query.\n<|im_end|>\n"

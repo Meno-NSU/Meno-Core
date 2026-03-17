@@ -341,15 +341,23 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         selected_kb = kb_id or req_extra
         
         should_use_chunk_rag = False
+        route_reason = f"rag_engine_type={settings.rag_engine_type}, selected_kb={selected_kb!r}"
         if chunk_rag_orchestrator:
             if settings.rag_engine_type == "zvec":
                 should_use_chunk_rag = True
+                route_reason = "settings.rag_engine_type == 'zvec'"
             elif selected_kb == "chunk-rag-kb":
                 should_use_chunk_rag = True
+                route_reason = "selected_kb == 'chunk-rag-kb'"
 
         if should_use_chunk_rag and chunk_rag_orchestrator:
             from meno_core.core.rag.models import RagRequest, RagMessage
-            logger.info("Routing request_id=%s session_id=%s to Chunk RAG mode.", completion_id, session_id)
+            logger.info(
+                "Routing request_id=%s session_id=%s to Chunk RAG mode (%s).",
+                completion_id,
+                session_id,
+                route_reason,
+            )
             
             # Map history format
             rag_msgs = []
@@ -367,6 +375,13 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         
         # Legacy callback
         try:
+            logger.info(
+                "Routing request_id=%s session_id=%s to legacy LightRAG mode (%s). "
+                "Chunk-RAG retrieval timing logs are not emitted on this path.",
+                completion_id,
+                session_id,
+                route_reason,
+            )
             return await rag_instance.aquery(
                 resolved_query,
                 param=QueryParam(
