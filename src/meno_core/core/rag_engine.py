@@ -152,7 +152,12 @@ async def llm_model_func(prompt: str,
         history_messages = []
     effective_model = _current_model_override.get() or settings.llm_model_name
     try:
-        logger.info(f"Sending request to LLM (model={effective_model}) with {len(history_messages)} messages, prompt: {prompt}")
+        logger.debug(
+            "Sending request to LLM (model=%s) with %s history messages, prompt_len=%s",
+            effective_model,
+            len(history_messages),
+            len(prompt),
+        )
         if not stream:
             answer: str = await generate_with_llm(
                 prompt=prompt,
@@ -162,7 +167,7 @@ async def llm_model_func(prompt: str,
                 hashing_kv=hashing_kv,
                 **kwargs,
             )
-            logger.info(f"Received response from LLM, length: {len(answer)}")
+            logger.debug("Received non-streaming LLM response, length=%s", len(answer))
             return answer
 
         result = await openai_complete_if_cache(
@@ -223,11 +228,11 @@ async def generate_with_llm(
             chunks.append(part)
         result = "".join(chunks)
 
-    logger.info(f"Full raw answer: {result.strip()}")
+    logger.debug("Received raw LLM answer, length=%s", len(result))
 
     thinking_end_position = result.find(THINK_END_TOKEN)
     if thinking_end_position >= 0:
-        logger.info(
+        logger.debug(
             "Reasoning part was removed from 0 to %s position",
             thinking_end_position,
         )

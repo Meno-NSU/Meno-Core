@@ -47,7 +47,7 @@ LINKS_LOG_BACKUP_COUNT: int = getattr(settings, "links_log_backup_count", 5)
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger: Logger = logging.getLogger(__name__)
 
@@ -349,14 +349,19 @@ async def chat_completions(request: OAIChatCompletionsRequest):
 
         if should_use_chunk_rag and chunk_rag_orchestrator:
             from meno_core.core.rag.models import RagRequest, RagMessage
-            logger.info("Routing query to new Chunk RAG Mode.")
+            logger.info("Routing request_id=%s session_id=%s to Chunk RAG mode.", completion_id, session_id)
             
             # Map history format
             rag_msgs = []
             for h in history:
                 rag_msgs.append(RagMessage(role=h["role"], text=h["content"]))
                 
-            chunk_req = RagRequest(question=resolved_query, history=rag_msgs, session_id=session_id)
+            chunk_req = RagRequest(
+                question=resolved_query,
+                history=rag_msgs,
+                session_id=session_id,
+                request_id=completion_id,
+            )
             response = await chunk_rag_orchestrator.answer(chunk_req)
             return response.answer
         

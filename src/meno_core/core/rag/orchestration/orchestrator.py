@@ -15,6 +15,7 @@ from meno_core.core.rag.retrieval.base import BaseRetriever
 
 logger = logging.getLogger(__name__)
 retrieval_logger = logging.getLogger("chunk_rag.retrieval")
+pipeline_logger = logging.getLogger("chunk_rag.pipeline")
 
 
 class ChunkRagOrchestrator:
@@ -70,6 +71,16 @@ class ChunkRagOrchestrator:
         start_time = time.time()
         telemetry: Dict[str, Any] = {"steps_latency_ms": {}}
         debug_info = RagDebugInfo()
+        request_id = request.request_id or "-"
+        session_id = request.session_id or "-"
+
+        pipeline_logger.info(
+            "request-start request_id=%s session_id=%s question_len=%s history_messages=%s",
+            request_id,
+            session_id,
+            len(request.question),
+            len(request.history),
+        )
 
         try:
             step_start = time.time()
@@ -86,6 +97,12 @@ class ChunkRagOrchestrator:
             debug_info.hypothetical_document = representations.hypothetical_document
 
             if not representations.is_meaningful:
+                pipeline_logger.info(
+                    "request-finished request_id=%s session_id=%s total_ms=%.2f meaningful=false",
+                    request_id,
+                    session_id,
+                    (time.time() - start_time) * 1000,
+                )
                 return RagResponse(
                     answer="Похоже, что ваш запрос не содержит конкретного вопроса или не относится к НГУ. Пожалуйста, уточните ваш запрос.",
                     insufficient_information=False,
@@ -220,6 +237,19 @@ class ChunkRagOrchestrator:
             telemetry["steps_latency_ms"]["generation"] = round((time.time() - step_start) * 1000, 2)
             telemetry["total_latency_ms"] = round((time.time() - start_time) * 1000, 2)
             debug_info.retrieval_stats = telemetry
+            pipeline_logger.info(
+                "request-finished request_id=%s session_id=%s total_ms=%s steps_ms=%s retrieval_summary_ms=%s retrieved_counts=%s dense_queries=%s lexical_queries=%s sources=%s insufficient=%s",
+                request_id,
+                session_id,
+                telemetry["total_latency_ms"],
+                telemetry["steps_latency_ms"],
+                telemetry["retrieval_latency_summary_ms"],
+                telemetry["retrieved_counts"],
+                len(dense_queries),
+                len(shared_queries),
+                len(sources),
+                insuff_flag,
+            )
 
             return RagResponse(
                 answer=answer_text,
@@ -229,6 +259,13 @@ class ChunkRagOrchestrator:
             )
         except Exception as error:
             logger.error("Error in chunk RAG orchestrator: %s", error, exc_info=True)
+            pipeline_logger.error(
+                "request-failed request_id=%s session_id=%s total_ms=%.2f error=%s",
+                request_id,
+                session_id,
+                (time.time() - start_time) * 1000,
+                error,
+            )
             return RagResponse(
                 answer="Произошла системная ошибка при обработке вашего запроса.",
                 insufficient_information=True,
