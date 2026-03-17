@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
@@ -10,6 +11,7 @@ from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.models import RetrievedChunk
 
 logger = logging.getLogger(__name__)
+retrieval_logger = logging.getLogger("chunk_rag.retrieval")
 
 DEFAULT_RERANK_INSTRUCTION = "Given a user query, retrieve relevant passages that answer the query."
 _BACKEND_CACHE: dict[str, "QwenRerankerBackend"] = {}
@@ -55,6 +57,16 @@ class QwenRerankerBackend:
         self.no_token_id = self.tokenizer.convert_tokens_to_ids("no")
         self.yes_token_id = self.tokenizer.convert_tokens_to_ids("yes")
 
+    @property
+    def device(self) -> str:
+        try:
+            return str(next(self.model.parameters()).device)
+        except Exception:
+            device = getattr(self.model, "device", None)
+            if device is not None:
+                return str(device)
+        return "unknown"
+
     @classmethod
     def from_pretrained(cls, model_path: str) -> "QwenRerankerBackend":
         logger.info("Loading Qwen reranker backend: %s", model_path)
@@ -65,7 +77,9 @@ class QwenRerankerBackend:
             device_map="cuda" if torch.cuda.is_available() else "cpu",
         )
         model.eval()
-        return cls(tokenizer=tokenizer, model=model, model_path=model_path)
+        backend = cls(tokenizer=tokenizer, model=model, model_path=model_path)
+        logger.info("Qwen reranker backend loaded on device=%s", backend.device)
+        return backend
 
     def format_pair(self, query: str, document: str, instruction: str | None = None) -> str:
         effective_instruction = instruction or self.instruction
@@ -149,6 +163,7 @@ class QwenCausalReranker:
         if not chunks:
             return QwenRerankResult(reranked_chunks=[], preview=[])
 
+        started_at = time.perf_counter()
         docs = [chunk_wrapper.chunk.text for chunk_wrapper in chunks]
         scores = self.backend.score_pairs([(query, doc) for doc in docs])
 
@@ -161,6 +176,15 @@ class QwenCausalReranker:
         reranked_chunks.sort(key=lambda chunk_wrapper: -chunk_wrapper.score)
         reranked_chunks = reranked_chunks[:top_n]
         preview = build_retrieved_chunk_preview(reranked_chunks, self.preview_k)
+        retrieval_logger.info(
+            "reranker=qwen model=%s device=%s candidates=%s kept=%s top_n=%s latency_ms=%.2f",
+            self.backend.model_path,
+            self.backend.device,
+            len(chunks),
+            len(reranked_chunks),
+            top_n,
+            (time.perf_counter() - started_at) * 1000,
+        )
         return QwenRerankResult(reranked_chunks=reranked_chunks, preview=preview)
 
 

@@ -42,12 +42,22 @@ async def build_chunk_rag_orchestrator(
     )
     
     try:
-        # Check if index exists by trying to load it
-        if indexer.needs_rebuild():
-            logger.info("Chunk RAG indices not found. Initializing vector DB from source corpus...")
+        inspection = indexer.inspect_index_state()
+        if inspection.ready:
+            logger.info("Found existing Chunk RAG indices. Proceeding to load...")
+        elif settings.chunk_rag_auto_rebuild:
+            logger.warning(
+                "Chunk RAG indices require rebuild. Reasons: %s. Auto-rebuild is enabled, rebuilding from corpus...",
+                inspection.reasons,
+            )
             await _run_initialization(indexer, working_dir)
         else:
-            logger.info("Found existing Chunk RAG indices. Proceeding to load...")
+            logger.error(
+                "Chunk RAG indices are unavailable or incompatible, and auto-rebuild is disabled. Reasons: %s. "
+                "Run `./.venv/bin/python scripts/init_chunk_rag.py` to rebuild manually.",
+                inspection.reasons,
+            )
+            return None
             
         collections, bm25, chunk_map, _manifest = indexer.load_indexes()
         

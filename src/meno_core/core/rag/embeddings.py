@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
@@ -11,6 +12,16 @@ from meno_core.core.gte_embedding import GTEEmbedding
 logger = logging.getLogger(__name__)
 
 
+def resolve_model_device(model: Any) -> str:
+    try:
+        return str(next(model.parameters()).device)
+    except Exception:
+        device = getattr(model, "device", None)
+        if device is not None:
+            return str(device)
+    return "unknown"
+
+
 class DenseEmbedder(Protocol):
     name: str
     model_path: str
@@ -18,6 +29,10 @@ class DenseEmbedder(Protocol):
     pooling_strategy: str
     query_prefix: str
     document_prefix: str
+
+    @property
+    def device(self) -> str:
+        ...
 
     def encode_queries(self, texts: Sequence[str]) -> torch.Tensor:
         ...
@@ -38,6 +53,10 @@ class MultilingualDenseEmbedder:
     @property
     def dimension(self) -> int:
         return int(self.base_embedder.model.config.hidden_size)
+
+    @property
+    def device(self) -> str:
+        return resolve_model_device(self.base_embedder.model)
 
     def encode_queries(self, texts: Sequence[str]) -> torch.Tensor:
         return self._encode(texts)
@@ -101,6 +120,10 @@ class User2DenseEmbedder:
         outputs = self.model(**tokens, return_dict=True)
         pooled = self._mean_pool(outputs.last_hidden_state, tokens["attention_mask"])
         return F.normalize(pooled, p=2, dim=1)
+
+    @property
+    def device(self) -> str:
+        return resolve_model_device(self.model)
 
     @staticmethod
     def _mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:

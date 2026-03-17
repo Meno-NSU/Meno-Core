@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import List, Dict
 
 import zvec
@@ -39,16 +40,22 @@ class ZvecDenseRetriever(BaseRetriever):
         Returns top-K retrieved chunks by dense vector similarity.
         """
         try:
+            started_at = time.perf_counter()
             # 1. Embed query
+            embed_started_at = time.perf_counter()
             q_vec = self.embedder.encode_queries([query])[0].detach().cpu().numpy().tolist()
+            embed_latency_ms = (time.perf_counter() - embed_started_at) * 1000
 
             # 2. Query zvec
+            search_started_at = time.perf_counter()
             zvec_results = self.collection.query(
                 zvec.VectorQuery("embedding", vector=q_vec),
                 topk=top_k
             )
+            search_latency_ms = (time.perf_counter() - search_started_at) * 1000
 
             # 3. Map back to RetrievedChunk
+            mapping_started_at = time.perf_counter()
             results = []
             for r in zvec_results:
                 doc_id = str(r['id'])
@@ -67,6 +74,23 @@ class ZvecDenseRetriever(BaseRetriever):
                     )
                 else:
                     logger.warning(f"Zvec returned ID {doc_id} but it's not in chunk map.")
+
+            mapping_latency_ms = (time.perf_counter() - mapping_started_at) * 1000
+            total_latency_ms = (time.perf_counter() - started_at) * 1000
+
+            if self.debug_enabled:
+                retrieval_logger.info(
+                    "retriever=%s device=%s query=%r top_k=%s hits=%s latency_ms=%.2f embed_ms=%.2f search_ms=%.2f map_ms=%.2f",
+                    self.name,
+                    self.embedder.device,
+                    query,
+                    top_k,
+                    len(results),
+                    total_latency_ms,
+                    embed_latency_ms,
+                    search_latency_ms,
+                    mapping_latency_ms,
+                )
 
             if self.debug_enabled:
                 retrieval_logger.debug(

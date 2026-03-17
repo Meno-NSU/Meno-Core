@@ -4,6 +4,7 @@ import os
 import pickle
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
@@ -15,6 +16,12 @@ from meno_core.core.rag.embeddings import DenseEmbedder
 from meno_core.core.rag.models import Chunk
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class IndexInspectionResult:
+    ready: bool
+    reasons: list[str]
 
 
 class Indexer:
@@ -46,45 +53,103 @@ class Indexer:
     def expected_manifest(self) -> dict[str, Any]:
         return {
             "schema_version": 2,
-            "dense_indexes": {
-                source_name: {
-                    "path": str(self.zvec_paths[source_name].name),
-                    "model_path": embedder.model_path,
-                    "dimension": embedder.dimension,
-                    "pooling_strategy": embedder.pooling_strategy,
-                    "query_prefix": embedder.query_prefix,
-                    "document_prefix": embedder.document_prefix,
-                }
-                for source_name, embedder in self.dense_embedders.items()
+            "build_signature": {
+                "dense_indexes": {
+                    source_name: {
+                        "path": str(self.zvec_paths[source_name].name),
+                        "model_path": embedder.model_path,
+                        "dimension": embedder.dimension,
+                        "pooling_strategy": embedder.pooling_strategy,
+                        "query_prefix": embedder.query_prefix,
+                        "document_prefix": embedder.document_prefix,
+                    }
+                    for source_name, embedder in self.dense_embedders.items()
+                },
+                "bm25": {
+                    "normalizer_version": 2,
+                },
             },
-            "bm25": {
-                "normalizer_version": 2,
-            },
-            "reranker": {
-                "model_path": self.reranker_path,
-                "backend": "qwen_yes_no",
-            },
-            "fusion_weights": {
-                "multilingual_dense": self.config.fusion_weight_multilingual,
-                "russian_dense": self.config.fusion_weight_russian,
-                "lexical": self.config.fusion_weight_bm25,
+            "runtime_config": {
+                "reranker": {
+                    "model_path": self.reranker_path,
+                    "backend": "qwen_yes_no",
+                },
+                "fusion_weights": {
+                    "multilingual_dense": self.config.fusion_weight_multilingual,
+                    "russian_dense": self.config.fusion_weight_russian,
+                    "lexical": self.config.fusion_weight_bm25,
+                },
             },
         }
 
     def needs_rebuild(self) -> bool:
+        return not self.inspect_index_state().ready
+
+    def inspect_index_state(self) -> IndexInspectionResult:
+        reasons: list[str] = []
+
         if not self.chunks_meta_path.exists() or not self.bm25_path.exists() or not self.manifest_path.exists():
-            return True
+            if not self.chunks_meta_path.exists():
+                reasons.append(f"missing metadata file: {self.chunks_meta_path}")
+            if not self.bm25_path.exists():
+                reasons.append(f"missing BM25 artifact: {self.bm25_path}")
+            if not self.manifest_path.exists():
+                reasons.append(f"missing manifest: {self.manifest_path}")
 
         if any(not path.exists() for path in self.zvec_paths.values()):
-            return True
+            for source_name, path in self.zvec_paths.items():
+                if not path.exists():
+                    reasons.append(f"missing dense index for {source_name}: {path}")
+
+        if reasons:
+            return IndexInspectionResult(ready=False, reasons=reasons)
 
         try:
             with self.manifest_path.open("r", encoding="utf-8") as fp:
                 current_manifest = json.load(fp)
-        except Exception:
-            return True
+        except Exception as error:
+            return IndexInspectionResult(
+                ready=False,
+                reasons=[f"cannot read manifest {self.manifest_path}: {error}"],
+            )
 
-        return current_manifest != self.expected_manifest()
+        expected_manifest = self.expected_manifest()
+        current_schema_version = current_manifest.get("schema_version")
+        if current_schema_version != expected_manifest["schema_version"]:
+            reasons.append(
+                f"schema_version mismatch: current={current_schema_version}, expected={expected_manifest['schema_version']}"
+            )
+
+        current_build_signature = current_manifest.get("build_signature")
+        expected_build_signature = expected_manifest["build_signature"]
+        if current_build_signature != expected_build_signature:
+            reasons.extend(self._describe_signature_mismatch(current_build_signature, expected_build_signature))
+
+        return IndexInspectionResult(ready=not reasons, reasons=reasons)
+
+    @staticmethod
+    def _describe_signature_mismatch(current: Any, expected: Any, prefix: str = "build_signature") -> list[str]:
+        if current == expected:
+            return []
+
+        differences: list[str] = []
+        if isinstance(current, dict) and isinstance(expected, dict):
+            keys = sorted(set(current.keys()) | set(expected.keys()))
+            for key in keys:
+                next_prefix = f"{prefix}.{key}"
+                if key not in current:
+                    differences.append(f"missing manifest key: {next_prefix}")
+                    continue
+                if key not in expected:
+                    differences.append(f"unexpected manifest key: {next_prefix}")
+                    continue
+                differences.extend(Indexer._describe_signature_mismatch(current[key], expected[key], next_prefix))
+                if len(differences) >= 10:
+                    break
+            return differences
+
+        differences.append(f"mismatch at {prefix}: current={current!r}, expected={expected!r}")
+        return differences
 
     @staticmethod
     def _format_duration(seconds: float) -> str:

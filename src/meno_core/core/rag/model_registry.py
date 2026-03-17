@@ -40,6 +40,15 @@ def load_chunk_rag_model_registry(multilingual_embedder: GTEEmbedding) -> ChunkR
         russian_dense=User2DenseEmbedder.from_pretrained(settings.rus_embedder_path),
         reranker=load_cached_qwen_reranker_backend(settings.reranker_path),
     )
+    logger.info(
+        "Chunk-RAG models ready: multilingual_dense(device=%s, model=%s), russian_dense(device=%s, model=%s), reranker(device=%s, model=%s)",
+        registry.multilingual_dense.device,
+        registry.multilingual_dense.model_path,
+        registry.russian_dense.device,
+        registry.russian_dense.model_path,
+        registry.reranker.device,
+        registry.reranker.model_path,
+    )
     _cached_registry = registry
     _cached_key = cache_key
     return registry

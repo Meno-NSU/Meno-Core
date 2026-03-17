@@ -82,6 +82,10 @@ class Settings(BaseSettings):
         default=Path("resources/chunk_rag_data"),
         validation_alias="CHUNK_RAG_DATA_PATH"
     )
+    chunk_rag_auto_rebuild: bool = Field(
+        default=False,
+        validation_alias="CHUNK_RAG_AUTO_REBUILD",
+    )
     chunk_rag_top_k_dense_multilingual: int = Field(
         default=10,
         validation_alias="CHUNK_RAG_TOP_K_DENSE_MULTILINGUAL",

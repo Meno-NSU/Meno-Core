@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import List, Dict
 
 from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
@@ -38,19 +39,25 @@ class BM25LexicalRetriever(BaseRetriever):
         Returns top-K chunks by BM25 sparse similarity.
         """
         try:
+            started_at = time.perf_counter()
             # 1. Normalize query
+            normalize_started_at = time.perf_counter()
             query_terms = tokenize_for_bm25(query)
+            normalize_latency_ms = (time.perf_counter() - normalize_started_at) * 1000
 
             if not query_terms:
                 return []
 
             # 2. Get scores
+            scoring_started_at = time.perf_counter()
             scores = self.bm25.get_scores(query_terms)
+            scoring_latency_ms = (time.perf_counter() - scoring_started_at) * 1000
 
             # 3. Sort ascending then slice top K
             # zip index and score, sort descending on score
             scored_docs = sorted(enumerate(scores), key=lambda x: -x[1])[:top_k]
 
+            mapping_started_at = time.perf_counter()
             results = []
             for doc_idx, score in scored_docs:
                 if score <= 0:
@@ -70,6 +77,21 @@ class BM25LexicalRetriever(BaseRetriever):
                     )
                 else:
                     logger.warning(f"BM25 returned index {doc_idx} mapping to missing id {doc_id}")
+
+            mapping_latency_ms = (time.perf_counter() - mapping_started_at) * 1000
+            total_latency_ms = (time.perf_counter() - started_at) * 1000
+
+            if self.debug_enabled:
+                retrieval_logger.info(
+                    "retriever=lexical query=%r top_k=%s hits=%s latency_ms=%.2f normalize_ms=%.2f score_ms=%.2f map_ms=%.2f",
+                    query,
+                    top_k,
+                    len(results),
+                    total_latency_ms,
+                    normalize_latency_ms,
+                    scoring_latency_ms,
+                    mapping_latency_ms,
+                )
 
             if self.debug_enabled:
                 retrieval_logger.debug(
