@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Union
+from typing import Union
 from pathlib import Path
 
 from meno_core.config.settings import settings
@@ -20,7 +20,7 @@ retrieval_logger = logging.getLogger("chunk_rag.retrieval")
 async def build_chunk_rag_orchestrator(
     working_dir: Union[str, Path],
     embedder: GTEEmbedding
-) -> Optional[ChunkRagOrchestrator]:
+) -> ChunkRagOrchestrator:
     """
     Factory function to initialize the ChunkRAG pipeline.
     If the indexes do not exist, it will build them from the compiled corpus JSONL.
@@ -52,12 +52,13 @@ async def build_chunk_rag_orchestrator(
             )
             await _run_initialization(indexer, working_dir)
         else:
-            logger.error(
-                "Chunk RAG indices are unavailable or incompatible, and auto-rebuild is disabled. Reasons: %s. "
-                "Run `./.venv/bin/python scripts/init_chunk_rag.py` to rebuild manually.",
-                inspection.reasons,
+            message = (
+                "Chunk RAG indices are unavailable or incompatible, and auto-rebuild is disabled. "
+                f"Reasons: {inspection.reasons}. "
+                "Run `./.venv/bin/python scripts/init_chunk_rag.py` to rebuild manually."
             )
-            return None
+            logger.error("%s", message)
+            raise RuntimeError(message)
             
         collections, bm25, chunk_map, _manifest = indexer.load_indexes()
         
@@ -101,7 +102,7 @@ async def build_chunk_rag_orchestrator(
         
     except Exception as e:
         logger.error(f"❌ Error during ChunkRAG initialization: {e}", exc_info=True)
-        return None
+        raise RuntimeError("ChunkRAG initialization failed.") from e
 
 
 async def _run_initialization(indexer: Indexer, working_dir: Path):

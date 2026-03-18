@@ -42,10 +42,6 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("ABBREVIATIONS_PATH", "ABBREVIATIONS_FILE"),
     )
-    rag_engine_type: Literal["lightrag", "zvec"] = Field(
-        default="lightrag",
-        validation_alias="RAG_ENGINE_TYPE"
-    )
     query_mode: Literal["local", "global", "hybrid", "naive", "mix"] = Field(
         default="mix",
         validation_alias="QUERY_MODE",

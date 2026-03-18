@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import re
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime
 from functools import partial
@@ -30,6 +31,7 @@ from transformers import AutoTokenizer, AutoModel  # type: ignore[import]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.lightrag_timing import get_current_rag_trace
 from meno_core.core.lexical_normalizer import normalize_for_bm25, tokenize_for_bm25
 from meno_core.core.prompts import (
     TEMPLATE_FOR_ABBREVIATION_EXPLAINING,
@@ -158,7 +160,9 @@ async def llm_model_func(prompt: str,
             len(history_messages),
             len(prompt),
         )
+        trace = get_current_rag_trace()
         if not stream:
+            llm_started_at = time.perf_counter()
             answer: str = await generate_with_llm(
                 prompt=prompt,
                 system_prompt=system_prompt,
@@ -167,9 +171,20 @@ async def llm_model_func(prompt: str,
                 hashing_kv=hashing_kv,
                 **kwargs,
             )
+            if trace is not None:
+                trace.record_stage(
+                    "llm_nonstream",
+                    (time.perf_counter() - llm_started_at) * 1000,
+                    meta={
+                        "model": effective_model,
+                        "history_messages": len(history_messages),
+                        "prompt_len": len(prompt),
+                    },
+                )
             logger.debug("Received non-streaming LLM response, length=%s", len(answer))
             return answer
 
+        llm_started_at = time.perf_counter()
         result = await openai_complete_if_cache(
             model=effective_model,
             prompt=prompt,
@@ -182,6 +197,17 @@ async def llm_model_func(prompt: str,
             stream=True,
             **kwargs,
         )
+        if trace is not None:
+            trace.record_stage(
+                "llm_open",
+                (time.perf_counter() - llm_started_at) * 1000,
+                meta={
+                    "model": effective_model,
+                    "history_messages": len(history_messages),
+                    "prompt_len": len(prompt),
+                },
+            )
+            trace.mark_llm_stream_open()
 
         if isinstance(result, str):
             async def _to_stream() -> AsyncIterator[str]:
@@ -341,6 +367,7 @@ async def resolve_anaphora(question: str, history: list) -> str:
 # ---------- Embedding function ----------
 # treat AutoModel and tokenizers as Any in signatures to avoid missing-stub attribute errors
 async def gte_hf_embed(texts: List[str], tokenizer: Any, embed_model: Any) -> np.ndarray:
+    started_at = time.perf_counter()
     try:
         device = next(embed_model.parameters()).device
         batch_dict = tokenizer(
@@ -364,6 +391,17 @@ async def gte_hf_embed(texts: List[str], tokenizer: Any, embed_model: Any) -> np
     except Exception as e:
         logger.error(f"Error in gte_hf_embed: {str(e)}", exc_info=True)
         raise
+    finally:
+        trace = get_current_rag_trace()
+        if trace is not None:
+            text_count = len(texts)
+            trace.increment_counter("embedding_calls", 1)
+            trace.increment_counter("embedding_texts", text_count)
+            trace.record_stage(
+                "embedding_compute",
+                (time.perf_counter() - started_at) * 1000,
+                meta={"texts": text_count},
+            )
 
 
 async def qwen_hf_rerank(
@@ -372,7 +410,22 @@ async def qwen_hf_rerank(
         reranker_backend: QwenRerankerBackend,
         top_n: Optional[int] = None,
 ) -> List[dict[str, Any]]:
-    return reranker_backend.rerank_documents(query=query, documents=documents, top_n=top_n)
+    started_at = time.perf_counter()
+    try:
+        return reranker_backend.rerank_documents(query=query, documents=documents, top_n=top_n)
+    finally:
+        trace = get_current_rag_trace()
+        if trace is not None:
+            trace.increment_counter("reranker_calls", 1)
+            trace.increment_counter("reranker_documents", len(documents))
+            trace.record_stage(
+                "reranker_model",
+                (time.perf_counter() - started_at) * 1000,
+                meta={
+                    "documents": len(documents),
+                    "top_n": top_n,
+                },
+            )
 
 
 async def score_answer_relevance_to_prompt(
@@ -463,7 +516,7 @@ async def is_likely_hallucination(
     return is_h, score
 
 
-async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tuple[Any, Any]]]:
+async def initialize_rag() -> tuple["LightRAGEngine", GTEEmbedding, BM25Okapi, list[tuple[Any, Any]]]:
     """
     Инициализирует объект LightRAG.
 
@@ -513,17 +566,6 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
             logger2.debug("RAG init: BM25 corpus size=%d", len(bm25.corpus))
         except Exception:
             pass
-
-        if settings.rag_engine_type == "zvec":
-            from meno_core.core.zvec_rag import ZvecRAGEngine
-            logger.info("Using ZVEC engine.")
-            engine: Union["ZvecRAGEngine", "LightRAGEngine"] = ZvecRAGEngine(
-                working_dir=str(WORKING_DIR),
-                embedder=embedder,
-                bm25=bm25,
-                chunk_db=chunk_db
-            )
-            return engine, embedder, bm25, chunk_db
 
         logger.info("Creating LightRAG instance...")
         rag: LightRAG = LightRAG(

@@ -1,8 +1,10 @@
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any, List, Optional, Union
 
 from meno_core.config.settings import settings
+from meno_core.core.lightrag_timing import get_current_rag_trace
 from meno_core.core.rag_engine import _current_model_override
 from lightrag.llm.openai import openai_complete_if_cache # type: ignore[import-untyped]
 
@@ -27,6 +29,8 @@ async def call_llm(
     effective_model = override_model or _current_model_override.get() or settings.llm_model_name
     
     try:
+        trace = get_current_rag_trace()
+        llm_started_at = time.perf_counter()
         # Strip chain-of-thought elements handled mostly if model output format requires it.
         # This mirrors rag_engine's main complete function behavior.
         result = await openai_complete_if_cache(
@@ -40,6 +44,18 @@ async def call_llm(
             stream=stream,
             **kwargs,
         )
+        if trace is not None:
+            trace.record_stage(
+                "llm_open" if stream else "llm_nonstream",
+                (time.perf_counter() - llm_started_at) * 1000,
+                meta={
+                    "model": effective_model,
+                    "history_messages": len(history_messages),
+                    "prompt_len": len(prompt),
+                },
+            )
+            if stream:
+                trace.mark_llm_stream_open()
         
         if stream:
             if isinstance(result, str):

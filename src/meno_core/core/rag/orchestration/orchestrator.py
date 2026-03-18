@@ -2,6 +2,7 @@ import logging
 import time
 from typing import Any, Dict, List
 
+from meno_core.core.lightrag_timing import get_current_rag_trace
 from meno_core.core.rag.config import ChunkRagConfig
 from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.fusion.merger import HybridFusion
@@ -72,6 +73,7 @@ class ChunkRagOrchestrator:
         debug_info = RagDebugInfo()
         request_id = request.request_id or "-"
         session_id = request.session_id or "-"
+        trace = get_current_rag_trace()
 
         pipeline_logger.info(
             "request-start request_id=%s session_id=%s question_len=%s history_messages=%s",
@@ -88,7 +90,14 @@ class ChunkRagOrchestrator:
             else:
                 representations = self._build_passthrough_representations(request.question)
 
-            telemetry["steps_latency_ms"]["query_rewrite"] = round((time.time() - step_start) * 1000, 2)
+            rewrite_ms = round((time.time() - step_start) * 1000, 2)
+            telemetry["steps_latency_ms"]["query_rewrite"] = rewrite_ms
+            if trace is not None:
+                trace.record_stage(
+                    "query_rewrite",
+                    rewrite_ms,
+                    meta={"search_queries": len(representations.search_queries)},
+                )
             debug_info.rewritten_query = representations.rewritten_query
             debug_info.resolved_coreferences = representations.resolved_coreferences
             debug_info.expanded_abbreviations = representations.expanded_abbreviations
@@ -172,7 +181,8 @@ class ChunkRagOrchestrator:
                 source_name: len(self._flatten_and_deduplicate(results))
                 for source_name, results in grouped_results.items()
             }
-            telemetry["steps_latency_ms"]["retrieval"] = round((time.time() - step_start) * 1000, 2)
+            retrieval_ms = round((time.time() - step_start) * 1000, 2)
+            telemetry["steps_latency_ms"]["vector_retrieval"] = retrieval_ms
             telemetry["retrieved_counts"] = pooled_counts
             telemetry["retrieval_latency_ms"] = retrieval_latency_entries
             telemetry["retrieval_latency_summary_ms"] = {
@@ -185,6 +195,17 @@ class ChunkRagOrchestrator:
                 for source_name, entries in retrieval_latency_entries.items()
             }
             telemetry["retrieval_call_count"] = sum(len(entries) for entries in retrieval_latency_entries.values())
+            if trace is not None:
+                trace.increment_counter("retrieval_calls", telemetry["retrieval_call_count"])
+                trace.record_stage(
+                    "vector_retrieval",
+                    retrieval_ms,
+                    meta={
+                        "dense_queries": len(dense_queries),
+                        "lexical_queries": len(lexical_queries),
+                        "retrieved_counts": pooled_counts,
+                    },
+                )
             if self.config.debug_retrieval:
                 retrieval_logger.info(
                     "retrieval-summary question=%r dense_queries=%s lexical_queries=%s latency_summary_ms=%s retrieved_counts=%s",
@@ -197,8 +218,16 @@ class ChunkRagOrchestrator:
 
             step_start = time.time()
             fusion_result = self.fusion.fuse(grouped_results, top_k=self.config.top_k_after_fusion)
-            telemetry["steps_latency_ms"]["fusion"] = round((time.time() - step_start) * 1000, 2)
+            fusion_ms = round((time.time() - step_start) * 1000, 2)
+            telemetry["steps_latency_ms"]["fusion"] = fusion_ms
             telemetry["fusion_candidate_count"] = len(fusion_result.chunks)
+            if trace is not None:
+                trace.increment_counter("fusion_candidates", len(fusion_result.chunks))
+                trace.record_stage(
+                    "fusion",
+                    fusion_ms,
+                    meta={"candidates": len(fusion_result.chunks)},
+                )
             if self.config.debug_retrieval:
                 telemetry["fused_preview"] = fusion_result.fused_preview
 
@@ -208,16 +237,39 @@ class ChunkRagOrchestrator:
                 chunks=fusion_result.chunks,
                 top_n=self.config.top_n_after_rerank,
             )
-            telemetry["steps_latency_ms"]["rerank"] = round((time.time() - step_start) * 1000, 2)
+            rerank_ms = round((time.time() - step_start) * 1000, 2)
+            telemetry["steps_latency_ms"]["rerank"] = rerank_ms
             telemetry["rerank_candidate_count"] = len(fusion_result.chunks)
             telemetry["rerank_kept_count"] = len(rerank_result.reranked_chunks)
+            if trace is not None:
+                trace.increment_counter("rerank_candidates", len(fusion_result.chunks))
+                trace.increment_counter("rerank_kept", len(rerank_result.reranked_chunks))
+                trace.record_stage(
+                    "rerank",
+                    rerank_ms,
+                    meta={
+                        "candidates": len(fusion_result.chunks),
+                        "kept": len(rerank_result.reranked_chunks),
+                    },
+                )
             if self.config.debug_retrieval:
                 telemetry["rerank_preview"] = rerank_result.preview
 
             step_start = time.time()
             context_str, sources = self.assembler.assemble(rerank_result.reranked_chunks)
-            telemetry["steps_latency_ms"]["context_assembly"] = round((time.time() - step_start) * 1000, 2)
+            context_ms = round((time.time() - step_start) * 1000, 2)
+            telemetry["steps_latency_ms"]["context_build"] = context_ms
             telemetry["context_token_count"] = estimate_tokens(context_str) if context_str else 0
+            if trace is not None:
+                trace.increment_counter("context_sources", len(sources))
+                trace.record_stage(
+                    "context_build",
+                    context_ms,
+                    meta={
+                        "sources": len(sources),
+                        "context_tokens": telemetry["context_token_count"],
+                    },
+                )
 
             step_start = time.time()
             answer_text, insuff_flag = await self.generator.generate_answer(
@@ -227,7 +279,8 @@ class ChunkRagOrchestrator:
                 history=request.history,
                 stream=False,
             )
-            telemetry["steps_latency_ms"]["generation"] = round((time.time() - step_start) * 1000, 2)
+            generation_ms = round((time.time() - step_start) * 1000, 2)
+            telemetry["steps_latency_ms"]["llm_nonstream"] = generation_ms
             telemetry["total_latency_ms"] = round((time.time() - start_time) * 1000, 2)
             debug_info.retrieval_stats = telemetry
             pipeline_logger.info(
