@@ -66,6 +66,9 @@ THINK_END_TOKEN = '</think>'
 _current_model_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     '_current_model_override', default=None
 )
+_current_base_url_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    '_current_base_url_override', default=None
+)
 
 
 logger: Logger = logging.getLogger(__name__)
@@ -185,6 +188,8 @@ async def llm_model_func(prompt: str,
             return answer
 
         llm_started_at = time.perf_counter()
+        effective_base_url = _current_base_url_override.get() or settings.openai_base_url
+
         result = await openai_complete_if_cache(
             model=effective_model,
             prompt=prompt,
@@ -193,7 +198,7 @@ async def llm_model_func(prompt: str,
             enable_cot=enable_cot,
             hashing_kv=hashing_kv,
             api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
+            base_url=effective_base_url,
             stream=True,
             **kwargs,
         )
@@ -232,6 +237,7 @@ async def generate_with_llm(
     if history_messages is None:
         history_messages = []
     effective_model = _current_model_override.get() or settings.llm_model_name
+    effective_base_url = _current_base_url_override.get() or settings.openai_base_url
 
     kwargs.pop("stream", None)
 
@@ -244,7 +250,7 @@ async def generate_with_llm(
         history_messages=history_messages,
         enable_cot=False,
         api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        base_url=effective_base_url,
         **kwargs,
     )
 

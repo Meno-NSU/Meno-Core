@@ -5,7 +5,7 @@ from typing import Any, List, Optional, Union
 
 from meno_core.config.settings import settings
 from meno_core.core.lightrag_timing import get_current_rag_trace
-from meno_core.core.rag_engine import _current_model_override
+from meno_core.core.rag_engine import _current_model_override, _current_base_url_override
 from lightrag.llm.openai import openai_complete_if_cache # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ async def call_llm(
         history_messages = []
         
     effective_model = override_model or _current_model_override.get() or settings.llm_model_name
+    effective_base_url = _current_base_url_override.get() or settings.openai_base_url
     
     try:
         trace = get_current_rag_trace()
@@ -40,7 +41,7 @@ async def call_llm(
             history_messages=history_messages,
             enable_cot=False,
             api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
+            base_url=effective_base_url,
             stream=stream,
             **kwargs,
         )

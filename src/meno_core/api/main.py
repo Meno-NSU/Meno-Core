@@ -340,6 +340,11 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                     }
                 },
             )
+        
+        endpoint = vllm_registry.lookup_endpoint(model_id)
+        if endpoint:
+            from meno_core.core.rag_engine import _current_base_url_override
+            _current_base_url_override.set(f"{endpoint}/v1")
 
     # Set the model override so rag_engine LLM calls use the UI-selected model
     _current_model_override.set(model_id)
