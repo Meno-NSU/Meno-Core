@@ -226,6 +226,7 @@ class ChunkRagChatBackend:
                 mode=request.rag_engine_id,
                 session_id=request.session_id,
                 request_id=request.request_id,
+                model=request.model,
                 base_url=request.base_url,
             )
             response = await self.orchestrator.answer(rag_request)

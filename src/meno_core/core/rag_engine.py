@@ -5,7 +5,8 @@ import math
 import os
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from logging import Logger
@@ -58,6 +59,7 @@ MULTILINGUAL_EMBEDDER_PATH: str = settings.multilingual_embedder_path
 RERANKER_PATH: str = settings.reranker_path
 DEFAULT_HALLUCINATION_THRESHOLD: float = 0.3
 
+THINK_START_TOKEN = '<think>'
 THINK_END_TOKEN = '</think>'
 
 # ── Model override via contextvars ──
@@ -132,6 +134,155 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
     return _as_json_block(obj)
 
 
+def resolve_llm_request(
+    override_model: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    return (
+        override_model or _current_model_override.get() or settings.llm_model_name or "menon-1",
+        override_base_url or _current_base_url_override.get() or settings.openai_base_url,
+    )
+
+
+@contextmanager
+def llm_request_scope(
+    override_model: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+) -> Iterator[None]:
+    model_token = _current_model_override.set(override_model)
+    base_url_token = _current_base_url_override.set(override_base_url)
+    try:
+        yield
+    finally:
+        _current_base_url_override.reset(base_url_token)
+        _current_model_override.reset(model_token)
+
+
+def _strip_reasoning_prefix(text: str) -> str:
+    thinking_end_position = text.find(THINK_END_TOKEN)
+    if thinking_end_position >= 0:
+        logger.debug(
+            "Reasoning part was removed from 0 to %s position",
+            thinking_end_position,
+        )
+        return text[thinking_end_position + len(THINK_END_TOKEN):]
+    return text
+
+
+async def _single_chunk_stream(text: str) -> AsyncIterator[str]:
+    if text:
+        yield text
+
+
+async def _normalize_streaming_llm_result(result: Any) -> AsyncIterator[str]:
+    if isinstance(result, str):
+        async for part in _single_chunk_stream(_strip_reasoning_prefix(result).strip()):
+            yield part
+        return
+
+    buffer = ""
+    hiding_thinking: Optional[bool] = None
+
+    async for part in result:
+        text = "" if part is None else str(part)
+        if not text:
+            continue
+
+        if hiding_thinking is False:
+            yield text
+            continue
+
+        buffer += text
+
+        if hiding_thinking is None:
+            if THINK_START_TOKEN.startswith(buffer):
+                continue
+            if not buffer.startswith(THINK_START_TOKEN):
+                hiding_thinking = False
+                yield buffer
+                buffer = ""
+                continue
+            hiding_thinking = True
+
+        if hiding_thinking and THINK_END_TOKEN in buffer:
+            _, remainder = buffer.split(THINK_END_TOKEN, 1)
+            if remainder:
+                yield remainder
+            buffer = ""
+            hiding_thinking = False
+
+    if buffer:
+        yield _strip_reasoning_prefix(buffer) if hiding_thinking else buffer
+
+
+async def call_openai_llm(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    history_messages: Optional[List[Any]] = None,
+    *,
+    stream: bool = False,
+    enable_cot: bool = False,
+    hashing_kv=None,
+    override_model: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+    **kwargs: Any,
+) -> Union[str, AsyncIterator[str]]:
+    if history_messages is None:
+        history_messages = []
+
+    effective_model, effective_base_url = resolve_llm_request(
+        override_model=override_model,
+        override_base_url=override_base_url,
+    )
+    logger.debug(
+        "Sending request to LLM (model=%s) with %s history messages, prompt_len=%s, stream=%s",
+        effective_model,
+        len(history_messages),
+        len(prompt),
+        stream,
+    )
+
+    trace = get_current_rag_trace()
+    llm_started_at = time.perf_counter()
+    result = await openai_complete_if_cache(
+        model=effective_model,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        enable_cot=enable_cot,
+        hashing_kv=hashing_kv,
+        api_key=settings.openai_api_key,
+        base_url=effective_base_url,
+        stream=stream,
+        **kwargs,
+    )
+
+    if trace is not None:
+        trace.record_stage(
+            "llm_open" if stream else "llm_nonstream",
+            (time.perf_counter() - llm_started_at) * 1000,
+            meta={
+                "model": effective_model,
+                "history_messages": len(history_messages),
+                "prompt_len": len(prompt),
+            },
+        )
+        if stream:
+            trace.mark_llm_stream_open()
+
+    if stream:
+        return _normalize_streaming_llm_result(result)
+
+    if not isinstance(result, str):
+        chunks: list[str] = []
+        async for part in result:
+            chunks.append(str(part))
+        result = "".join(chunks)
+
+    logger.debug("Received raw LLM answer, length=%s", len(result))
+    return _strip_reasoning_prefix(result).strip()
+
+
 # ---------- LLM wrapper ----------
 async def llm_model_func(prompt: str,
                          system_prompt: Optional[str] = None,
@@ -153,81 +304,24 @@ async def llm_model_func(prompt: str,
     Возвращает:
     - str: Ответ, сгенерированный языковой моделью.
     """
-    if history_messages is None:
-        history_messages = []
     effective_model = _current_model_override.get() or settings.llm_model_name
     try:
-        logger.debug(
-            "Sending request to LLM (model=%s) with %s history messages, prompt_len=%s",
-            effective_model,
-            len(history_messages),
-            len(prompt),
-        )
-        trace = get_current_rag_trace()
-        if not stream:
-            llm_started_at = time.perf_counter()
-            override_model = kwargs.pop("model", None)
-            override_base_url = kwargs.pop("base_url", None)
-            answer: str = await generate_with_llm(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                enable_cot=enable_cot,
-                hashing_kv=hashing_kv,
-                override_model=override_model,
-                override_base_url=override_base_url,
-                **kwargs,
-            )
-            if trace is not None:
-                trace.record_stage(
-                    "llm_nonstream",
-                    (time.perf_counter() - llm_started_at) * 1000,
-                    meta={
-                        "model": effective_model,
-                        "history_messages": len(history_messages),
-                        "prompt_len": len(prompt),
-                    },
-                )
-            logger.debug("Received non-streaming LLM response, length=%s", len(answer))
-            return answer
-
-        llm_started_at = time.perf_counter()
-        effective_base_url = _current_base_url_override.get() or settings.openai_base_url
-
-        result = await openai_complete_if_cache(
-            model=effective_model,
+        override_model = kwargs.pop("override_model", None) or kwargs.pop("model", None)
+        override_base_url = kwargs.pop("override_base_url", None) or kwargs.pop("base_url", None)
+        return await call_openai_llm(
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            stream=stream,
             enable_cot=enable_cot,
             hashing_kv=hashing_kv,
-            api_key=settings.openai_api_key,
-            base_url=effective_base_url,
-            stream=True,
+            override_model=override_model,
+            override_base_url=override_base_url,
             **kwargs,
         )
-        if trace is not None:
-            trace.record_stage(
-                "llm_open",
-                (time.perf_counter() - llm_started_at) * 1000,
-                meta={
-                    "model": effective_model,
-                    "history_messages": len(history_messages),
-                    "prompt_len": len(prompt),
-                },
-            )
-            trace.mark_llm_stream_open()
-
-        if isinstance(result, str):
-            async def _to_stream() -> AsyncIterator[str]:
-                yield result
-
-            return _to_stream()
-
-        return result
 
     except Exception as e:
-        logger.error(f"Error in llm_model_func: {str(e)}", exc_info=True)
+        logger.error("Error in llm_model_func (model=%s): %s", effective_model, str(e), exc_info=True)
         return "Извините, сейчас не удалось получить ответ от модели."
 
 
@@ -238,47 +332,27 @@ async def generate_with_llm(
         history_messages: Optional[List[Any]] = None,
         **kwargs: Any,
 ) -> str:
-    if history_messages is None:
-        history_messages = []
-        
     override_model = kwargs.pop("override_model", None)
     override_base_url = kwargs.pop("override_base_url", None)
-    
-    effective_model = override_model or _current_model_override.get() or settings.llm_model_name
-    effective_base_url = override_base_url or _current_base_url_override.get() or settings.openai_base_url
 
     kwargs.pop("stream", None)
-
-    kwargs.pop("enable_cot", None)
-
-    result = await openai_complete_if_cache(
-        model=effective_model,
+    result = await call_openai_llm(
         prompt=prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        stream=False,
         enable_cot=False,
-        api_key=settings.openai_api_key,
-        base_url=effective_base_url,
+        override_model=override_model,
+        override_base_url=override_base_url,
         **kwargs,
     )
+    if isinstance(result, str):
+        return result
 
-    if not isinstance(result, str):
-        chunks: list[str] = []
-        async for part in result:
-            chunks.append(part)
-        result = "".join(chunks)
-
-    logger.debug("Received raw LLM answer, length=%s", len(result))
-
-    thinking_end_position = result.find(THINK_END_TOKEN)
-    if thinking_end_position >= 0:
-        logger.debug(
-            "Reasoning part was removed from 0 to %s position",
-            thinking_end_position,
-        )
-        result = result[thinking_end_position + len(THINK_END_TOKEN):]
-
-    return result.strip()
+    chunks: list[str] = []
+    async for part in result:
+        chunks.append(part)
+    return "".join(chunks).strip()
 
 
 async def explain_abbreviations(question: str, abbreviations: dict, override_model: Optional[str] = None, override_base_url: Optional[str] = None) -> str:

@@ -14,6 +14,7 @@ class RagRequest(BaseModel):
     session_id: Optional[str] = None
     request_id: Optional[str] = None
     language: Optional[str] = None
+    model: Optional[str] = None
     base_url: Optional[str] = None
 
 

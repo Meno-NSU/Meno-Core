@@ -45,6 +45,7 @@ package = true
 
 [dependency-groups]
 dev = [
+    "pytest",
     "ruff",
     "mypy",
     "build",

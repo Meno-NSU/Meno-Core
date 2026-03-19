@@ -26,8 +26,13 @@ from meno_core.config.settings import settings
 from meno_core.core.lightrag_engine import LightRAGEngine
 from meno_core.core.link_correcter import LinkCorrecter
 from meno_core.core.link_searcher import LinkSearcher
-from meno_core.core.rag_engine import initialize_rag, resolve_anaphora, explain_abbreviations, \
-    get_current_period, _current_model_override
+from meno_core.core.rag_engine import (
+    explain_abbreviations,
+    get_current_period,
+    initialize_rag,
+    llm_request_scope,
+    resolve_anaphora,
+)
 from meno_core.core.rag_runtime import (
     RagBackendRegistry,
     RagChatRequest,
@@ -236,7 +241,7 @@ class ImageOnlyRequest(BaseModel):
 
 
 class OAIChatCompletionsRequest(BaseModel):
-    model: str
+    model: Optional[str] = None
     messages: List[OAIMsg]
     stream: bool = False
     max_tokens: Optional[int] = None
@@ -306,51 +311,88 @@ def _log_request_summary(
     )
 
 
+def _default_model_name() -> str:
+    return settings.llm_model_name or "menon-1"
+
+
+def _build_model_not_found_response(model_id: str, available_models: list[str]) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": (
+                    f"Model '{model_id}' is not available on this vLLM endpoint. "
+                    f"Available models: {available_models}"
+                ),
+                "type": "invalid_request_error",
+                "code": "model_not_found",
+                "param": "model",
+            }
+        },
+    )
+
+
+async def _resolve_requested_model(requested_model: Optional[str]) -> tuple[str, Optional[str], Optional[JSONResponse]]:
+    normalized_model = requested_model.strip() if isinstance(requested_model, str) and requested_model.strip() else None
+    default_model = _default_model_name()
+
+    if vllm_registry is None:
+        return normalized_model or default_model, None, None
+
+    models = await vllm_registry.list_models()
+    available_models = [m["id"] for m in models]
+
+    if not available_models:
+        model_id = normalized_model or default_model
+        if normalized_model and model_id != default_model:
+            logger.warning(
+                "Rejected request for unknown model '%s'. Available: %s",
+                model_id,
+                available_models,
+            )
+            return model_id, None, _build_model_not_found_response(model_id, available_models)
+
+        logger.warning(
+            "vLLM registry returned no models; falling back to configured default model '%s'.",
+            model_id,
+        )
+        return model_id, None, None
+
+    if default_model not in available_models:
+        logger.warning(
+            "Configured default model '%s' is unavailable in the registry; falling back to '%s'.",
+            default_model,
+            available_models[0],
+        )
+        default_model = available_models[0]
+
+    model_id = normalized_model or default_model
+    if model_id not in available_models:
+        logger.warning(
+            "Rejected request for unknown model '%s'. Available: %s",
+            model_id,
+            available_models,
+        )
+        return model_id, None, _build_model_not_found_response(model_id, available_models)
+
+    endpoint = vllm_registry.lookup_endpoint(model_id)
+    return model_id, f"{endpoint}/v1" if endpoint else None, None
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: OAIChatCompletionsRequest):
     if rag_backend_registry is None:
         raise RuntimeError("RAG is not initialized.")
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
-    model_id: str = request.model or "menon-1"
     request_started_at = time.perf_counter()
     request_timings_ms: Dict[str, float] = {}
     selected_knowledge_base_id = "unknown"
     selected_rag_engine_id = "unknown"
     route_reason = "unknown"
-    explicit_base_url: str | None = None
-
-    if vllm_registry is not None:
-        if not await vllm_registry.is_valid_model(model_id):
-            available_models = [m["id"] for m in await vllm_registry.list_models()]
-            logger.warning(
-                "Rejected request for unknown model '%s'. Available: %s",
-                model_id, available_models,
-            )
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": {
-                        "message": (
-                            f"Model '{model_id}' is not available on this vLLM endpoint. "
-                            f"Available models: {available_models}"
-                        ),
-                        "type": "invalid_request_error",
-                        "code": "model_not_found",
-                        "param": "model",
-                    }
-                },
-            )
-        
-        
-        endpoint = vllm_registry.lookup_endpoint(model_id)
-        if endpoint:
-            explicit_base_url = f"{endpoint}/v1"
-            from meno_core.core.rag_engine import _current_base_url_override
-            _current_base_url_override.set(explicit_base_url)
-
-    # Set the model override so rag_engine LLM calls use the UI-selected model
-    _current_model_override.set(model_id)
+    model_id, explicit_base_url, model_error = await _resolve_requested_model(request.model)
+    if model_error is not None:
+        return model_error
     session_id: str = request.user or f"session-{completion_id}"
 
     if collector is not None:
@@ -451,19 +493,20 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         base_url=explicit_base_url,
     )
 
-    async def run_rag_backend():
+    async def run_rag_backend_non_stream():
         try:
-            return await backend_entry.backend.answer(
-                backend_request,
-                timings_sink=request_timings_ms,
-            )
+            with llm_request_scope(model_id, explicit_base_url):
+                return await backend_entry.backend.answer(
+                    backend_request,
+                    timings_sink=request_timings_ms,
+                )
         except Exception as e:
             logger.error(f"Error querying RAG backend: {e}", exc_info=True)
             raise
 
     if not request.stream:
         try:
-            response = await run_rag_backend()  # type: ignore[misc]
+            response = await run_rag_backend_non_stream()  # type: ignore[misc]
             if hasattr(response, "__aiter__"):
                 chunks = []
                 async for part in response:
@@ -565,23 +608,27 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         accumulated: list[str] = []
 
         try:
-            result: str | AsyncIterator[str] = await run_rag_backend()
+            with llm_request_scope(model_id, explicit_base_url):
+                result: str | AsyncIterator[str] = await backend_entry.backend.answer(
+                    backend_request,
+                    timings_sink=request_timings_ms,
+                )
 
-            async def iter_pieces():
-                if hasattr(result, "__aiter__"):
-                    async for part in result:
-                        if part:
-                            yield str(part)
-                else:
-                    text: str = str(result)
-                    step: int = 512
-                    for i in range(0, len(text), step):
-                        yield text[i:i + step]
+                async def iter_pieces():
+                    if hasattr(result, "__aiter__"):
+                        async for part in result:
+                            if part:
+                                yield str(part)
+                    else:
+                        text: str = str(result)
+                        step: int = 512
+                        for i in range(0, len(text), step):
+                            yield text[i:i + step]
 
-            async for piece in iter_pieces():
-                accumulated.append(piece)
-                data: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({"content": piece})
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                async for piece in iter_pieces():
+                    accumulated.append(piece)
+                    data: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({"content": piece})
+                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
             done: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({}, finish_reason="stop")
             yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
@@ -755,7 +802,7 @@ async def list_models():
         if models:
             return {"object": "list", "data": models}
     # Fallback: return the single configured model
-    model_name = settings.llm_model_name or "menon-1"
+    model_name = _default_model_name()
     return {
         "object": "list",
         "data": [{
