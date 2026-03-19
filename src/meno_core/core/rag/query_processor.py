@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import List
+from typing import List, Optional
 
 from meno_core.core.rag.models import QueryRepresentations, RagMessage
 from meno_core.core.rag.prompts import QUERY_REWRITE_SYSTEM_PROMPT
