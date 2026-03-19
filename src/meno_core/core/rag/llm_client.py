@@ -17,6 +17,7 @@ async def call_llm(
     history_messages: Optional[List[Any]] = None,
     stream: bool = False,
     override_model: Optional[str] = None,
+    override_base_url: Optional[str] = None,
     **kwargs: Any
 ) -> Union[str, AsyncIterator[str]]:
     """
@@ -27,7 +28,7 @@ async def call_llm(
         history_messages = []
         
     effective_model = override_model or _current_model_override.get() or settings.llm_model_name
-    effective_base_url = _current_base_url_override.get() or settings.openai_base_url
+    effective_base_url = override_base_url or _current_base_url_override.get() or settings.openai_base_url
     
     try:
         trace = get_current_rag_trace()

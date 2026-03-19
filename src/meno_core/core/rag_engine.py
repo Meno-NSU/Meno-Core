@@ -166,12 +166,16 @@ async def llm_model_func(prompt: str,
         trace = get_current_rag_trace()
         if not stream:
             llm_started_at = time.perf_counter()
+            override_model = kwargs.pop("model", None)
+            override_base_url = kwargs.pop("base_url", None)
             answer: str = await generate_with_llm(
                 prompt=prompt,
                 system_prompt=system_prompt,
                 history_messages=history_messages,
                 enable_cot=enable_cot,
                 hashing_kv=hashing_kv,
+                override_model=override_model,
+                override_base_url=override_base_url,
                 **kwargs,
             )
             if trace is not None:
@@ -236,8 +240,12 @@ async def generate_with_llm(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    effective_model = _current_model_override.get() or settings.llm_model_name
-    effective_base_url = _current_base_url_override.get() or settings.openai_base_url
+        
+    override_model = kwargs.pop("override_model", None)
+    override_base_url = kwargs.pop("override_base_url", None)
+    
+    effective_model = override_model or _current_model_override.get() or settings.llm_model_name
+    effective_base_url = override_base_url or _current_base_url_override.get() or settings.openai_base_url
 
     kwargs.pop("stream", None)
 
@@ -273,7 +281,7 @@ async def generate_with_llm(
     return result.strip()
 
 
-async def explain_abbreviations(question: str, abbreviations: dict) -> str:
+async def explain_abbreviations(question: str, abbreviations: dict, override_model: Optional[str] = None) -> str:
     """
     Обрабатывает вопрос пользователя, заменяя аббревиатуры на их расшифровки.
 
@@ -313,7 +321,10 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
             abbreviations_dict=filtered_abbreviations,
             text_of_question=question
         )
-        new_improved_question = await generate_with_llm(prompt=user_prompt)
+        new_improved_question = await generate_with_llm(
+            prompt=user_prompt,
+            override_model=override_model
+        )
         logger.debug(f"Improved question: {new_improved_question}")
         return new_improved_question
     except Exception as e:
@@ -321,7 +332,7 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
         return question
 
 
-async def resolve_anaphora(question: str, history: list) -> str:
+async def resolve_anaphora(question: str, history: list, override_model: Optional[str] = None) -> str:
     """
     Обрабатывает вопрос пользователя, устраняя местоимённую анафору.
 
@@ -362,6 +373,7 @@ async def resolve_anaphora(question: str, history: list) -> str:
             prompt=user_prompt,
             system_prompt=SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
             history_messages=FEW_SHOTS_FOR_ANAPHORA,
+            override_model=override_model
         )
         logger.debug(f"Question after anaphora resolution: {question_without_anaphora}")
         return question_without_anaphora

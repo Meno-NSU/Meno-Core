@@ -86,7 +86,7 @@ class ChunkRagOrchestrator:
         try:
             step_start = time.time()
             if self.config.rewrite_enabled:
-                representations = await self.query_processor.process_query(request.question, request.history)
+                representations = await self.query_processor.process_query(request.question, request.history, override_model=request.model)
             else:
                 representations = self._build_passthrough_representations(request.question)
 
@@ -278,6 +278,7 @@ class ChunkRagOrchestrator:
                 sources=sources,
                 history=request.history,
                 stream=False,
+                override_model=request.model
             )
             generation_ms = round((time.time() - step_start) * 1000, 2)
             telemetry["steps_latency_ms"]["llm_nonstream"] = generation_ms

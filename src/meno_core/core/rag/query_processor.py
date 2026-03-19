@@ -77,7 +77,7 @@ class QueryProcessor:
     containing abbreviations, coreferences, search queries, and a hypothetical doc.
     """
     
-    async def process_query(self, query: str, history: List[RagMessage]) -> QueryRepresentations:
+    async def process_query(self, query: str, history: List[RagMessage], override_model: Optional[str] = None) -> QueryRepresentations:
         """
         Takes the user query and dialogue history and calls the LLM to get a structured rewriting.
         """
@@ -94,7 +94,8 @@ class QueryProcessor:
             # Alternatively we could use `llm_client.py` if we wanted to isolate it further.
             response_text = await generate_with_llm(
                 prompt=user_prompt,
-                system_prompt=QUERY_REWRITE_SYSTEM_PROMPT
+                system_prompt=QUERY_REWRITE_SYSTEM_PROMPT,
+                override_model=override_model
             )
             
             # Parse the structured JSON output

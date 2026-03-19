@@ -368,7 +368,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
 
     expand_started_at = time.perf_counter()
     try:
-        expanded_query: str = await explain_abbreviations(query, abbreviations)
+        expanded_query: str = await explain_abbreviations(query, abbreviations, override_model=model_id)
 
     except Exception as explain_error:
         logger.exception("Abbreviation explanation failed", exc_info=explain_error)
@@ -377,7 +377,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
 
     resolve_started_at = time.perf_counter()
     try:
-        resolved_query: str = await resolve_anaphora(expanded_query, history)
+        resolved_query: str = await resolve_anaphora(expanded_query, history, override_model=model_id)
     except Exception as resolve_error:
         logger.exception("Anaphora resolution failed", exc_info=resolve_error)
         resolved_query = expanded_query

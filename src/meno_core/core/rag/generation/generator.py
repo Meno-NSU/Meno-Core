@@ -31,7 +31,8 @@ class AnswerGenerator:
         context: str,
         sources: List[RagSource],
         history: List[RagMessage],
-        stream: bool = False
+        stream: bool = False,
+        override_model: Optional[str] = None
     ) -> Tuple[str, bool]:
         """
         Generate answer based on question and context.
@@ -45,7 +46,7 @@ class AnswerGenerator:
         history_msgs = [{"role": m.role, "content": m.text} for m in history]
 
         if self.reliability_mode_enabled and not stream:
-            return await self._generate_with_reliability_fallback(question, context, history_msgs)
+            return await self._generate_with_reliability_fallback(question, context, history_msgs, override_model=override_model)
 
         # Standard generation
         prompt = RAG_ANSWER_SYSTEM_PROMPT.format(context=context, question=question)
@@ -53,7 +54,8 @@ class AnswerGenerator:
         answer = await call_llm(
             prompt=prompt,
             history_messages=history_msgs,
-            stream=stream
+            stream=stream,
+            override_model=override_model
         )
         
         # Check hallucination or insufficient info
@@ -69,7 +71,8 @@ class AnswerGenerator:
         self,
         question: str,
         context: str,
-        history_msgs: list
+        history_msgs: list,
+        override_model: Optional[str] = None
     ) -> Tuple[str, bool]:
         """
         Implements fallback by shuffling context and generating multiple candidates,
@@ -82,7 +85,7 @@ class AnswerGenerator:
         async def _gen(blocks: List[str]) -> str:
             shuffled_context = "\n\n---\n\n".join(blocks)
             prompt = RAG_ANSWER_SYSTEM_PROMPT.format(context=shuffled_context, question=question)
-            return await call_llm(prompt=prompt, history_messages=history_msgs, stream=False)
+            return await call_llm(prompt=prompt, history_messages=history_msgs, stream=False, override_model=override_model)
 
         # Keep original order for Candidate 1
         tasks = [_gen(context_blocks)]
@@ -102,5 +105,5 @@ class AnswerGenerator:
         formatted_candidates = "\n\n".join([f"Candidate {i+1}:\n{c}" for i, c in enumerate(candidates)])
         agg_prompt = FALLBACK_AGGREGATION_PROMPT.format(question=question, candidate_answers=formatted_candidates)
         
-        final_answer = await call_llm(prompt=agg_prompt, stream=False)
+        final_answer = await call_llm(prompt=agg_prompt, stream=False, override_model=override_model)
         return final_answer, False
