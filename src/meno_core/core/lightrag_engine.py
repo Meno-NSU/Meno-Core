@@ -50,6 +50,7 @@ class LightRAGEngine:
         knowledge_base_id = str(kwargs.pop("knowledge_base_id", "unknown-kb"))
         rag_engine_id = str(kwargs.pop("rag_engine_id", "lightrag"))
         model = str(kwargs.pop("model", "unknown-model"))
+        base_url = kwargs.pop("base_url", None)
         route_reason = str(kwargs.pop("route_reason", "direct lightrag query"))
         timings_sink = kwargs.pop("timings_sink", None)
         if timings_sink is not None and not isinstance(timings_sink, MutableMapping):
