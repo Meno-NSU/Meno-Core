@@ -1,7 +1,7 @@
 import logging
 import random
 import asyncio
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from meno_core.core.rag.models import RagMessage, RagSource
 from meno_core.core.rag.prompts import RAG_ANSWER_SYSTEM_PROMPT, FALLBACK_AGGREGATION_PROMPT
