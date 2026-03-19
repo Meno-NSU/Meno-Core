@@ -123,6 +123,7 @@ class LightRAGEngine:
             knowledge_base_id=request.knowledge_base_id,
             rag_engine_id=request.rag_engine_id,
             model=request.model,
+            base_url=request.base_url,
             route_reason=request.route_reason,
             timings_sink=timings_sink,
         )

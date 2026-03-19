@@ -34,6 +34,7 @@ class RagChatRequest:
     knowledge_base_id: str
     rag_engine_id: str
     route_reason: str
+    base_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +226,7 @@ class ChunkRagChatBackend:
                 mode=request.rag_engine_id,
                 session_id=request.session_id,
                 request_id=request.request_id,
+                base_url=request.base_url,
             )
             response = await self.orchestrator.answer(rag_request)
             trace.finalize(timings_sink=timings_sink)

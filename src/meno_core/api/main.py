@@ -318,6 +318,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     selected_knowledge_base_id = "unknown"
     selected_rag_engine_id = "unknown"
     route_reason = "unknown"
+    explicit_base_url: str | None = None
 
     if vllm_registry is not None:
         if not await vllm_registry.is_valid_model(model_id):
@@ -341,10 +342,12 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 },
             )
         
+        
         endpoint = vllm_registry.lookup_endpoint(model_id)
         if endpoint:
+            explicit_base_url = f"{endpoint}/v1"
             from meno_core.core.rag_engine import _current_base_url_override
-            _current_base_url_override.set(f"{endpoint}/v1")
+            _current_base_url_override.set(explicit_base_url)
 
     # Set the model override so rag_engine LLM calls use the UI-selected model
     _current_model_override.set(model_id)
@@ -368,7 +371,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
 
     expand_started_at = time.perf_counter()
     try:
-        expanded_query: str = await explain_abbreviations(query, abbreviations, override_model=model_id)
+        expanded_query: str = await explain_abbreviations(query, abbreviations, override_model=model_id, override_base_url=explicit_base_url)
 
     except Exception as explain_error:
         logger.exception("Abbreviation explanation failed", exc_info=explain_error)
@@ -377,7 +380,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
 
     resolve_started_at = time.perf_counter()
     try:
-        resolved_query: str = await resolve_anaphora(expanded_query, history, override_model=model_id)
+        resolved_query: str = await resolve_anaphora(expanded_query, history, override_model=model_id, override_base_url=explicit_base_url)
     except Exception as resolve_error:
         logger.exception("Anaphora resolution failed", exc_info=resolve_error)
         resolved_query = expanded_query
@@ -445,6 +448,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         knowledge_base_id=selected_knowledge_base_id,
         rag_engine_id=selected_rag_engine_id,
         route_reason=route_reason,
+        base_url=explicit_base_url,
     )
 
     async def run_rag_backend():

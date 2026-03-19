@@ -281,7 +281,7 @@ async def generate_with_llm(
     return result.strip()
 
 
-async def explain_abbreviations(question: str, abbreviations: dict, override_model: Optional[str] = None) -> str:
+async def explain_abbreviations(question: str, abbreviations: dict, override_model: Optional[str] = None, override_base_url: Optional[str] = None) -> str:
     """
     Обрабатывает вопрос пользователя, заменяя аббревиатуры на их расшифровки.
 
@@ -323,7 +323,8 @@ async def explain_abbreviations(question: str, abbreviations: dict, override_mod
         )
         new_improved_question = await generate_with_llm(
             prompt=user_prompt,
-            override_model=override_model
+            override_model=override_model,
+            override_base_url=override_base_url
         )
         logger.debug(f"Improved question: {new_improved_question}")
         return new_improved_question
@@ -332,7 +333,7 @@ async def explain_abbreviations(question: str, abbreviations: dict, override_mod
         return question
 
 
-async def resolve_anaphora(question: str, history: list, override_model: Optional[str] = None) -> str:
+async def resolve_anaphora(question: str, history: list, override_model: Optional[str] = None, override_base_url: Optional[str] = None) -> str:
     """
     Обрабатывает вопрос пользователя, устраняя местоимённую анафору.
 
@@ -373,7 +374,8 @@ async def resolve_anaphora(question: str, history: list, override_model: Optiona
             prompt=user_prompt,
             system_prompt=SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
             history_messages=FEW_SHOTS_FOR_ANAPHORA,
-            override_model=override_model
+            override_model=override_model,
+            override_base_url=override_base_url
         )
         logger.debug(f"Question after anaphora resolution: {question_without_anaphora}")
         return question_without_anaphora
