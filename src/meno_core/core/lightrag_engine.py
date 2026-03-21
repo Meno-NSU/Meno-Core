@@ -79,6 +79,18 @@ class LightRAGEngine:
 
         if isinstance(result, AsyncIterator) or hasattr(result, "__aiter__"):
             async def _wrapped_stream() -> AsyncIterator[str]:
+                from meno_core.core.rag.stage_event import stage_event as _se, stage_started as _ss
+
+                # Emit a summary <stage> covering all pre-generation retrieval work
+                retrieval_ms = sum(trace.stage_totals_ms.values())
+                stage_count = sum(trace.stage_counts.values())
+                if stage_count:
+                    yield _se(
+                        "lightrag_retrieval", retrieval_ms,
+                        f"Граф-поиск завершён ({stage_count} этапов)",
+                    )
+                yield _ss("generation", "Генерация ответа...")
+
                 try:
                     async for part in result:
                         if part:
