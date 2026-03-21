@@ -57,14 +57,19 @@ class AnswerGenerator:
             history_messages=history_msgs,
             stream=stream,
             override_model=override_model,
-            override_base_url=override_base_url
+            override_base_url=override_base_url,
+            preserve_thinking=True,
         )
         answer = str(result) if not isinstance(result, str) else result
 
+        # Strip <think> for hallucination check but keep it in the answer
+        from meno_core.core.rag_engine import _strip_reasoning_prefix
+        answer_for_check = _strip_reasoning_prefix(answer)
+
         # Check hallucination or insufficient info
-        insuff_info = "недостаточно информации" in answer.lower()
+        insuff_info = "недостаточно информации" in answer_for_check.lower()
         if not insuff_info:
-            is_hallucinating, _ = await is_likely_hallucination(question, answer, self.hallucination_threshold)
+            is_hallucinating, _ = await is_likely_hallucination(question, answer_for_check, self.hallucination_threshold)
             if is_hallucinating:
                 return "Ответ извлечен, но может быть неточным или недостаточно обоснован в контексте.", True
 
@@ -110,6 +115,6 @@ class AnswerGenerator:
         formatted_candidates = "\n\n".join([f"Candidate {i+1}:\n{c}" for i, c in enumerate(candidates)])
         agg_prompt = FALLBACK_AGGREGATION_PROMPT.format(question=question, candidate_answers=formatted_candidates)
 
-        final_result = await call_llm(prompt=agg_prompt, stream=False, override_model=override_model, override_base_url=override_base_url)
+        final_result = await call_llm(prompt=agg_prompt, stream=False, override_model=override_model, override_base_url=override_base_url, preserve_thinking=True)
         final_answer = str(final_result) if not isinstance(final_result, str) else final_result
         return final_answer, False
