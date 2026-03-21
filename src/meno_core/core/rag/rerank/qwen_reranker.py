@@ -2,7 +2,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore[import-untyped]

@@ -1,5 +1,5 @@
 import logging
-from typing import Union
+from typing import Any, Union
 from pathlib import Path
 
 from meno_core.config.settings import settings
@@ -30,17 +30,17 @@ async def build_chunk_rag_orchestrator(
     config = ChunkRagConfig()
     retrieval_logger.setLevel(getattr(logging, config.retrieval_log_level.upper(), logging.INFO))
     model_registry = load_chunk_rag_model_registry(embedder)
-    dense_embedders = {
+    dense_embedders: dict[str, Any] = {
         "multilingual_dense": model_registry.multilingual_dense,
         "russian_dense": model_registry.russian_dense,
     }
     indexer = Indexer(
         working_dir=working_dir,
-        dense_embedders=dense_embedders,
+        dense_embedders=dense_embedders,  # type: ignore[arg-type]
         reranker_path=model_registry.reranker.model_path,
         config=config,
     )
-    
+
     try:
         inspection = indexer.inspect_index_state()
         if inspection.ready:
@@ -59,13 +59,13 @@ async def build_chunk_rag_orchestrator(
             )
             logger.error("%s", message)
             raise RuntimeError(message)
-            
+
         collections, bm25, chunk_map, _manifest = indexer.load_indexes()
-        
+
         dense_retrievers = {
             "multilingual_dense": ZvecDenseRetriever(
                 name="multilingual_dense",
-                embedder=model_registry.multilingual_dense,
+                embedder=model_registry.multilingual_dense,  # type: ignore[arg-type]
                 collection=collections["multilingual_dense"],
                 chunk_map=chunk_map,
                 debug_enabled=config.debug_retrieval,
@@ -89,7 +89,7 @@ async def build_chunk_rag_orchestrator(
 
         orchestrator = ChunkRagOrchestrator(
             config=config,
-            dense_retrievers=dense_retrievers,
+            dense_retrievers=dense_retrievers,  # type: ignore[arg-type]
             lexical_retriever=lexical_retriever,
             reranker=QwenCausalReranker(
                 backend=model_registry.reranker,
@@ -99,7 +99,7 @@ async def build_chunk_rag_orchestrator(
         )
         logger.info("✅ ChunkRAG Orchestrator successfully initialized.")
         return orchestrator
-        
+
     except Exception as e:
         logger.error(f"❌ Error during ChunkRAG initialization: {e}", exc_info=True)
         raise RuntimeError("ChunkRAG initialization failed.") from e
@@ -123,7 +123,7 @@ async def _run_initialization(indexer: Indexer, working_dir: Path):
         logger.info(f"Delegating to Indexer to build zvec/bm25 for {len(chunks)} chunks in {working_dir}...")
         await indexer.build_index(chunks=chunks, batch_size=32)
         logger.info("✅ Initialization completed successfully.")
-        
+
     except Exception as e:
         logger.error(f"❌ Failed to parse or embed source chunks: {e}", exc_info=True)
         raise

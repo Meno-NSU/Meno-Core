@@ -76,7 +76,7 @@ class QueryProcessor:
     Handles rewriting the initial user query into an expanded JSON object
     containing abbreviations, coreferences, search queries, and a hypothetical doc.
     """
-    
+
     async def process_query(self, query: str, history: List[RagMessage], override_model: Optional[str] = None, override_base_url: Optional[str] = None) -> QueryRepresentations:
         """
         Takes the user query and dialogue history and calls the LLM to get a structured rewriting.
@@ -85,10 +85,10 @@ class QueryProcessor:
         history_text = ""
         for msg in history[-6:]:  # limit to last 6 messages
             history_text += f"{msg.role}: {msg.text}\n"
-            
+
         user_prompt = f"### Conversation History:\n{history_text}\n" if history_text else ""
         user_prompt += f"### User Query: {query}\n"
-        
+
         try:
             # We use the existing shared llm func from rag_engine
             # Alternatively we could use `llm_client.py` if we wanted to isolate it further.
@@ -98,10 +98,10 @@ class QueryProcessor:
                 override_model=override_model,
                 override_base_url=override_base_url
             )
-            
+
             # Parse the structured JSON output
             json_response = extract_json_from_text(response_text)
-            
+
             # Construct the Pydantic representations object, mapping missing keys safely
             rewritten_query = _safe_text(json_response.get("rewritten_query"), query)
             resolved_coreferences = _safe_text(json_response.get("resolved_coreferences"), rewritten_query)
@@ -119,7 +119,7 @@ class QueryProcessor:
                 is_meaningful=_parse_bool(json_response.get("is_meaningful"), True)
             )
             return representations
-            
+
         except Exception as e:
             logger.error(f"Error during query processing: {e}", exc_info=True)
             # Safe Fallback

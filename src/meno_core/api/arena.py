@@ -1,9 +1,14 @@
-import json
-from pathlib import Path
-from pydantic import BaseModel
-from fastapi import APIRouter
-from typing import Literal, Dict, List
+import asyncio
 import datetime
+import json
+import logging
+from pathlib import Path
+from typing import Dict, List, Literal, Optional
+
+from fastapi import APIRouter
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 arena_router = APIRouter(prefix="/v1/arena", tags=["arena"])
 
@@ -12,12 +17,19 @@ RESOURCES_DIR = Path("resources")
 RESOURCES_DIR.mkdir(exist_ok=True)
 VOTES_FILE = RESOURCES_DIR / "arena_votes.json"
 
+_votes_lock = asyncio.Lock()
+
+
 class VoteRequest(BaseModel):
     model_a: str
     kb_a: str
     model_b: str
     kb_b: str
     winner: Literal["a", "b", "tie", "both_bad"]
+    response_a: Optional[str] = None
+    response_b: Optional[str] = None
+    question: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 def _load_votes() -> List[Dict]:
@@ -29,23 +41,23 @@ def _load_votes() -> List[Dict]:
             return []
         return json.loads(content)
     except Exception as e:
-        print(f"Error loading votes: {e}")
+        logger.error("Error loading votes: %s", e)
         return []
+
 
 def _save_votes(votes: List[Dict]):
     try:
         VOTES_FILE.write_text(json.dumps(votes, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
-        print(f"Error saving votes: {e}")
+        logger.error("Error saving votes: %s", e)
 
 
 def _calculate_elo(votes: List[Dict]) -> List[Dict]:
-    # Base Elo
     INITIAL_ELO = 1200
     K_FACTOR = 32
 
     # Map of "model|kb" to stats
-    stats = {}
+    stats: Dict[str, Dict] = {}
 
     def get_stats(key: str):
         if key not in stats:
@@ -54,15 +66,13 @@ def _calculate_elo(votes: List[Dict]) -> List[Dict]:
                 "wins": 0,
                 "losses": 0,
                 "ties": 0,
-                "matches": 0
+                "both_bad": 0,
+                "matches": 0,
             }
         return stats[key]
 
     for vote in votes:
         winner = vote.get("winner")
-        # Ignore both_bad for Elo calculation, or treat as tie. Let's ignore it to not skew ratings.
-        if winner == "both_bad":
-            continue
 
         key_a = f"{vote['model_a']}|{vote['kb_a']}"
         key_b = f"{vote['model_b']}|{vote['kb_b']}"
@@ -90,6 +100,13 @@ def _calculate_elo(votes: List[Dict]) -> List[Dict]:
             score_a, score_b = 0.5, 0.5
             stat_a["ties"] += 1
             stat_b["ties"] += 1
+        elif winner == "both_bad":
+            # Both bad = both lose (score 0 against expected)
+            score_a, score_b = 0.0, 0.0
+            stat_a["both_bad"] += 1
+            stat_b["both_bad"] += 1
+            stat_a["losses"] += 1
+            stat_b["losses"] += 1
         else:
             continue
 
@@ -102,7 +119,6 @@ def _calculate_elo(votes: List[Dict]) -> List[Dict]:
     # Format result for leaderboard
     leaderboard = []
     for key, stat in stats.items():
-        # Only include if they played at least one match
         model, kb = key.split("|", 1)
         win_rate = stat["wins"] / stat["matches"] if stat["matches"] > 0 else 0.0
         leaderboard.append({
@@ -113,21 +129,22 @@ def _calculate_elo(votes: List[Dict]) -> List[Dict]:
             "wins": stat["wins"],
             "losses": stat["losses"],
             "ties": stat["ties"],
-            "win_rate": round(win_rate * 100, 1)
+            "both_bad": stat["both_bad"],
+            "win_rate": round(win_rate * 100, 1),
         })
 
-    # Sort by Elo descending
     leaderboard.sort(key=lambda x: x["elo"], reverse=True)
     return leaderboard
 
 
 @arena_router.post("/vote")
 async def submit_vote(vote: VoteRequest):
-    votes = _load_votes()
-    vote_record = vote.model_dump()
-    vote_record["timestamp"] = datetime.datetime.now().isoformat()
-    votes.append(vote_record)
-    _save_votes(votes)
+    async with _votes_lock:
+        votes = _load_votes()
+        vote_record = vote.model_dump()
+        vote_record["timestamp"] = datetime.datetime.now().isoformat()
+        votes.append(vote_record)
+        _save_votes(votes)
     return {"status": "ok"}
 
 

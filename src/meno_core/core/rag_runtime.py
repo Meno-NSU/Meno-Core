@@ -119,6 +119,7 @@ class RagBackendRegistry:
             entry = entries[0]
             return entry, f"inferred rag_engine_id={entry.rag_engine_id!r} from knowledge_base_id={normalized_kb!r}"
 
+        assert normalized_engine is not None
         entries = self._entries_by_engine.get(normalized_engine)
         if not entries:
             raise RagSelectionError(
@@ -176,6 +177,8 @@ def build_public_rag_backend_registry(
             "Public RAG backend initialization failed for: " + ", ".join(sorted(missing_backends))
         )
 
+    assert lightrag_backend is not None
+    assert chunk_rag_backend is not None
     entries = [
         RagBackendEntry(
             knowledge_base_id=lightrag_kb_id,
@@ -222,7 +225,7 @@ class ChunkRagChatBackend:
         try:
             rag_request = RagRequest(
                 question=request.question,
-                history=[RagMessage(role=item["role"], text=item["content"]) for item in request.history],
+                history=[RagMessage(role=item["role"], text=item["content"]) for item in request.history],  # type: ignore[arg-type]
                 mode=request.rag_engine_id,
                 session_id=request.session_id,
                 request_id=request.request_id,

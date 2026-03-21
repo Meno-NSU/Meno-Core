@@ -365,7 +365,7 @@ class ChunkRagOrchestrator:
         return unique
 
     def _flatten_and_deduplicate(self, lists_of_chunks: List[List[RetrievedChunk]]) -> List[RetrievedChunk]:
-        chunk_map = {}
+        chunk_map: dict[str, RetrievedChunk] = {}
         for chunk_list in lists_of_chunks:
             for chunk_wrapper in chunk_list:
                 chunk_id = chunk_wrapper.chunk.chunk_id

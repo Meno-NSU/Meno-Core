@@ -109,7 +109,7 @@ class ZvecRAGEngine:
         """
         # Step 1: Generate search queries
         logger.info(f"Expanding query: {query}")
-        # Note: in a real implementation we might pass LLM tokenizer specifically, but here we can 
+        # Note: in a real implementation we might pass LLM tokenizer specifically, but here we can
         # use generate_with_llm directly using standard text replacements just like in rag_engine.py
 
         prompt_for_search = self._prepare_search_prompt(query)

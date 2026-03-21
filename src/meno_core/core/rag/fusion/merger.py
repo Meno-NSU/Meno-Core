@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Mapping, Sequence
 
 from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.models import RetrievedChunk
@@ -37,7 +37,7 @@ class HybridFusion:
 
     def fuse(
         self,
-        result_sets: Dict[str, Sequence[RetrievedChunk] | Sequence[Sequence[RetrievedChunk]]],
+        result_sets: Mapping[str, Sequence[RetrievedChunk] | Sequence[Sequence[RetrievedChunk]]],
         top_k: int
     ) -> FusionResult:
         """

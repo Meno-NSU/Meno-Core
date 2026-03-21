@@ -120,7 +120,7 @@ if __name__ == "__main__":
 
 1. Основной ресурс:
    - [Сайт НГУ](https://www.nsu.ru/education/programs/)
-   
+
 2. Специализированные страницы:
    - Экономический факультет: [Ссылка](https://www.nsu.ru/economics/programms/)
    - Медико-психологический факультет: [Ссылка](https://www.nsu.ru/medicine/programms/)

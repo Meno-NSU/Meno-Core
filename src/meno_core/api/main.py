@@ -103,7 +103,7 @@ async def lifespan(_: FastAPI):
     rag_instance, embedder_instance, bm25_instance, chunk_db_instance = await initialize_rag()
     if not isinstance(rag_instance, LightRAGEngine):
         raise RuntimeError("Public lightrag backend is unavailable. initialize_rag() must return LightRAGEngine.")
-    
+
     from meno_core.core.rag.factory import build_chunk_rag_orchestrator
     chunk_rag_orchestrator = await build_chunk_rag_orchestrator(
         working_dir=settings.chunk_rag_data_path,

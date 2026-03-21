@@ -51,22 +51,23 @@ class AnswerGenerator:
 
         # Standard generation
         prompt = RAG_ANSWER_SYSTEM_PROMPT.format(context=context, question=question)
-        
-        answer = await call_llm(
+
+        result = await call_llm(
             prompt=prompt,
             history_messages=history_msgs,
             stream=stream,
             override_model=override_model,
             override_base_url=override_base_url
         )
-        
+        answer = str(result) if not isinstance(result, str) else result
+
         # Check hallucination or insufficient info
         insuff_info = "недостаточно информации" in answer.lower()
         if not insuff_info:
             is_hallucinating, _ = await is_likely_hallucination(question, answer, self.hallucination_threshold)
             if is_hallucinating:
                 return "Ответ извлечен, но может быть неточным или недостаточно обоснован в контексте.", True
-                
+
         return answer, insuff_info
 
     async def _generate_with_reliability_fallback(
@@ -82,31 +83,33 @@ class AnswerGenerator:
         then aggregating them.
         """
         logger.info("Executing Fallback Reliability Generation Mode...")
-        
+
         context_blocks = context.split("\n\n---\n\n")
-        
+
         async def _gen(blocks: List[str]) -> str:
             shuffled_context = "\n\n---\n\n".join(blocks)
             prompt = RAG_ANSWER_SYSTEM_PROMPT.format(context=shuffled_context, question=question)
-            return await call_llm(prompt=prompt, history_messages=history_msgs, stream=False, override_model=override_model, override_base_url=override_base_url)
+            result = await call_llm(prompt=prompt, history_messages=history_msgs, stream=False, override_model=override_model, override_base_url=override_base_url)
+            return str(result) if not isinstance(result, str) else result
 
         # Keep original order for Candidate 1
         tasks = [_gen(context_blocks)]
-        
+
         # Shuffle for Candidate 2 and 3
         for _ in range(2):
             shuffled = context_blocks.copy()
             random.shuffle(shuffled)
             tasks.append(_gen(shuffled))
-            
+
         candidates = await asyncio.gather(*tasks)
-        
+
         all_insufficient = all("недостаточно информации" in c.lower() for c in candidates)
         if all_insufficient:
             return "К сожалению, в базе данных недостаточно информации для ответа на этот вопрос.", True
-            
+
         formatted_candidates = "\n\n".join([f"Candidate {i+1}:\n{c}" for i, c in enumerate(candidates)])
         agg_prompt = FALLBACK_AGGREGATION_PROMPT.format(question=question, candidate_answers=formatted_candidates)
-        
-        final_answer = await call_llm(prompt=agg_prompt, stream=False, override_model=override_model, override_base_url=override_base_url)
+
+        final_result = await call_llm(prompt=agg_prompt, stream=False, override_model=override_model, override_base_url=override_base_url)
+        final_answer = str(final_result) if not isinstance(final_result, str) else final_result
         return final_answer, False
