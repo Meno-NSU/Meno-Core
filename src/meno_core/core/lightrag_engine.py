@@ -78,25 +78,33 @@ class LightRAGEngine:
             raise
 
         if isinstance(result, AsyncIterator) or hasattr(result, "__aiter__"):
-            async def _wrapped_stream() -> AsyncIterator[str]:
-                from meno_core.core.rag.stage_event import stage_event as _se, stage_started as _ss
+            async def _wrapped_stream():
+                import time as _time
 
-                # Emit a summary <stage> covering all pre-generation retrieval work
+                # Emit stage dicts (same format as ChunkRagOrchestrator.answer_stream)
                 retrieval_ms = sum(trace.stage_totals_ms.values())
                 stage_count = sum(trace.stage_counts.values())
                 if stage_count:
-                    yield _se(
-                        "lightrag_retrieval", retrieval_ms,
-                        f"Граф-поиск завершён ({stage_count} этапов)",
-                    )
-                yield _ss("generation", "Генерация ответа...")
+                    yield {
+                        "_stage": "retrieval", "status": "completed",
+                        "duration_ms": retrieval_ms,
+                        "detail": {"stages": stage_count},
+                    }
+                yield {"_stage": "generation", "status": "started"}
 
+                gen_start = _time.time()
+                first = True
                 try:
                     async for part in result:
-                        if part:
+                        if part and first:
                             trace.mark_llm_stream_first_chunk()
+                            first = False
                         yield str(part)
                     trace.mark_llm_stream_complete()
+
+                    gen_ms = round((_time.time() - gen_start) * 1000, 2)
+                    yield {"_stage": "generation", "status": "completed", "duration_ms": gen_ms}
+
                     trace.finalize(timings_sink=timings_sink)
                 except Exception as error:
                     trace.finalize(timings_sink=timings_sink, error=error)

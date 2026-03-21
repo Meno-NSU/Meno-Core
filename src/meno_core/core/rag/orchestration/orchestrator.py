@@ -363,7 +363,9 @@ class ChunkRagOrchestrator:
             yield {
                 "_stage": "query_rewrite", "status": "completed", "duration_ms": rewrite_ms,
                 "detail": {
-                    "search_queries": len(representations.search_queries),
+                    "rewritten_query": representations.rewritten_query,
+                    "resolved_coreferences": representations.resolved_coreferences,
+                    "search_queries": representations.search_queries,
                     "hyde_enabled": bool(representations.hypothetical_document),
                 },
             }
@@ -487,6 +489,11 @@ class ChunkRagOrchestrator:
 
             generation_ms = round((time.time() - step_start) * 1000, 2)
             total_ms = round((time.time() - start_time) * 1000, 2)
+
+            yield {
+                "_stage": "generation", "status": "completed", "duration_ms": generation_ms,
+            }
+
             pipeline_logger.info(
                 "request-finished request_id=%s session_id=%s total_ms=%s generation_ms=%s stream=true sources=%s",
                 request_id, session_id, total_ms, generation_ms, len(sources),
