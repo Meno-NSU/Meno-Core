@@ -1,5 +1,6 @@
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Any, Dict, List
 
 from meno_core.core.lightrag_timing import get_current_rag_trace
@@ -318,6 +319,194 @@ class ChunkRagOrchestrator:
                 answer="Произошла системная ошибка при обработке вашего запроса.",
                 insufficient_information=True,
             )
+
+    async def answer_stream(self, request: RagRequest) -> AsyncIterator[str | dict]:
+        """Streaming variant of :meth:`answer`.
+
+        Yields dicts for stage events and strings for LLM answer tokens.
+        Stage event dicts have: {"_stage": name, "status": ..., "duration_ms": ..., "detail": ...}
+        """
+        start_time = time.time()
+        request_id = request.request_id or "-"
+        session_id = request.session_id or "-"
+        trace = get_current_rag_trace()
+
+        pipeline_logger.info(
+            "request-start request_id=%s session_id=%s question_len=%s history_messages=%s stream=true",
+            request_id, session_id, len(request.question), len(request.history),
+        )
+
+        try:
+            # --- query rewrite ---
+            step_start = time.time()
+            if self.config.rewrite_enabled:
+                representations = await self.query_processor.process_query(
+                    request.question, request.history,
+                    override_model=request.model, override_base_url=request.base_url,
+                )
+            else:
+                representations = self._build_passthrough_representations(request.question)
+
+            rewrite_ms = round((time.time() - step_start) * 1000, 2)
+            if trace is not None:
+                trace.record_stage("query_rewrite", rewrite_ms, meta={"search_queries": len(representations.search_queries)})
+
+            if not representations.is_meaningful:
+                yield {
+                    "_stage": "query_rewrite", "status": "completed", "duration_ms": rewrite_ms,
+                    "detail": {"summary": "Query not meaningful"},
+                }
+                yield "Похоже, что ваш запрос не содержит конкретного вопроса или не относится к НГУ. Пожалуйста, уточните ваш запрос."
+                return
+
+            yield {
+                "_stage": "query_rewrite", "status": "completed", "duration_ms": rewrite_ms,
+                "detail": {
+                    "search_queries": len(representations.search_queries),
+                    "hyde_enabled": bool(representations.hypothetical_document),
+                },
+            }
+
+            # --- retrieval ---
+            step_start = time.time()
+            dense_queries, lexical_queries = self._build_retrieval_queries(request.question, representations)
+            retrieval_batches = []
+            for source_name, retriever in self.dense_retrievers.items():
+                top_k = (
+                    self.config.top_k_dense_multilingual
+                    if source_name == "multilingual_dense"
+                    else self.config.top_k_dense_russian
+                )
+                retrieval_batches.append(
+                    await self._timed_retrieve_many(source_name, dense_queries, retriever, top_k)
+                )
+            retrieval_batches.append(
+                await self._timed_retrieve_many("lexical", lexical_queries, self.lexical_retriever, self.config.top_k_bm25)
+            )
+
+            grouped_results: Dict[str, List[List[RetrievedChunk]]] = {
+                "multilingual_dense": [], "russian_dense": [], "lexical": [],
+            }
+            for source_name, _queries, batch_results, _latency_ms, _top_k in retrieval_batches:
+                grouped_results[source_name].extend(batch_results)
+
+            pooled_counts = {
+                source_name: len(self._flatten_and_deduplicate(results))
+                for source_name, results in grouped_results.items()
+            }
+            retrieval_ms = round((time.time() - step_start) * 1000, 2)
+            if trace is not None:
+                trace.record_stage("vector_retrieval", retrieval_ms, meta={"retrieved_counts": pooled_counts})
+
+            total_retrieved = sum(pooled_counts.values())
+            yield {
+                "_stage": "retrieval", "status": "completed", "duration_ms": retrieval_ms,
+                "detail": {
+                    "chunks_found": total_retrieved,
+                    "multilingual": pooled_counts.get("multilingual_dense", 0),
+                    "russian": pooled_counts.get("russian_dense", 0),
+                    "bm25": pooled_counts.get("lexical", 0),
+                },
+            }
+
+            # --- fusion ---
+            step_start = time.time()
+            fusion_result = self.fusion.fuse(grouped_results, top_k=self.config.top_k_after_fusion)
+            fusion_ms = round((time.time() - step_start) * 1000, 2)
+            if trace is not None:
+                trace.record_stage("fusion", fusion_ms, meta={"candidates": len(fusion_result.chunks)})
+
+            yield {
+                "_stage": "fusion", "status": "completed", "duration_ms": fusion_ms,
+                "detail": {"candidates": len(fusion_result.chunks)},
+            }
+
+            # --- rerank ---
+            step_start = time.time()
+            rerank_result = await self.reranker.rerank(
+                query=representations.resolved_coreferences,
+                chunks=fusion_result.chunks,
+                top_n=self.config.top_n_after_rerank,
+            )
+            rerank_ms = round((time.time() - step_start) * 1000, 2)
+            if trace is not None:
+                trace.record_stage("rerank", rerank_ms, meta={
+                    "candidates": len(fusion_result.chunks),
+                    "kept": len(rerank_result.reranked_chunks),
+                })
+
+            yield {
+                "_stage": "rerank", "status": "completed", "duration_ms": rerank_ms,
+                "detail": {
+                    "candidates": len(fusion_result.chunks),
+                    "kept": len(rerank_result.reranked_chunks),
+                },
+            }
+
+            # --- context assembly ---
+            step_start = time.time()
+            context_str, sources = self.assembler.assemble(rerank_result.reranked_chunks)
+            context_ms = round((time.time() - step_start) * 1000, 2)
+            context_tokens = estimate_tokens(context_str) if context_str else 0
+            if trace is not None:
+                trace.record_stage("context_build", context_ms, meta={"sources": len(sources), "context_tokens": context_tokens})
+
+            yield {
+                "_stage": "context_assembly", "status": "completed", "duration_ms": context_ms,
+                "detail": {"sources": len(sources), "context_tokens": context_tokens},
+            }
+
+            # --- generation (streaming) ---
+            yield {"_stage": "generation", "status": "started"}
+
+            step_start = time.time()
+            from meno_core.core.rag.llm_client import call_llm
+            from meno_core.core.rag.prompts import RAG_ANSWER_SYSTEM_PROMPT
+
+            if not context_str.strip():
+                yield "К сожалению, в базе данных недостаточно информации для ответа на этот вопрос."
+                return
+
+            history_msgs = [{"role": m.role, "content": m.text} for m in request.history]
+            prompt = RAG_ANSWER_SYSTEM_PROMPT.format(context=context_str, question=representations.resolved_coreferences)
+
+            result = await call_llm(
+                prompt=prompt,
+                history_messages=history_msgs,
+                stream=True,
+                override_model=request.model,
+                override_base_url=request.base_url,
+                preserve_thinking=True,
+            )
+
+            first_chunk = True
+            if hasattr(result, "__aiter__"):
+                async for token in result:
+                    if first_chunk:
+                        if trace is not None:
+                            trace.mark_llm_stream_first_chunk()
+                        first_chunk = False
+                    yield str(token)
+            else:
+                yield str(result)
+
+            if trace is not None:
+                trace.mark_llm_stream_complete()
+
+            generation_ms = round((time.time() - step_start) * 1000, 2)
+            total_ms = round((time.time() - start_time) * 1000, 2)
+            pipeline_logger.info(
+                "request-finished request_id=%s session_id=%s total_ms=%s generation_ms=%s stream=true sources=%s",
+                request_id, session_id, total_ms, generation_ms, len(sources),
+            )
+
+        except Exception as error:
+            logger.error("Error in chunk RAG orchestrator (stream): %s", error, exc_info=True)
+            pipeline_logger.error(
+                "request-failed request_id=%s session_id=%s total_ms=%.2f error=%s stream=true",
+                request_id, session_id, (time.time() - start_time) * 1000, error,
+            )
+            yield "Произошла системная ошибка при обработке вашего запроса."
 
     @staticmethod
     def _build_passthrough_representations(question: str) -> QueryRepresentations:
