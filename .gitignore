@@ -9,3 +9,4 @@ light_rag_db_v2/
 resources/lightrag_kg_v3.zip
 resources/lightrag_kg_v3/*
 *.log
+/resources/data/

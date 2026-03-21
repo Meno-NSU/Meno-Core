@@ -3,22 +3,27 @@ import os
 from pathlib import Path
 from typing import Any, List, Optional, Dict, Union
 
+import numpy as np
 import zvec
 from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.lexical_normalizer import tokenize_for_bm25
 from meno_core.core.prompts import (
     SEARCH_SYSTEM_PROMPT,
     MEANINGLESS_REQUEST_ANSWER,
     EXAMPLES_OF_SEARCH_QUERIES,
 )
+from meno_core.core.rag.config import ChunkRagConfig
+from meno_core.core.rag.fusion.merger import HybridFusion
+from meno_core.core.rag.generation.context_assembler import ContextAssembler
+from meno_core.core.rag.models import Chunk, ChunkMetadata, RetrievedChunk
+from meno_core.core.rag.rerank.qwen_reranker import QwenCausalReranker
 from meno_core.core.rag_engine import (
     generate_with_llm,
-    _snow,
-    _reranker_tokenizer,
-    _reranker_model,
 )
+from meno_core.core.rag.rerank.qwen_reranker import load_cached_qwen_reranker_backend
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,20 @@ class ZvecRAGEngine:
         self.bm25 = bm25
         self.chunk_db = chunk_db
         self.zvec_path = self.working_dir / "zvec_index"
+        self.reranker_backend = load_cached_qwen_reranker_backend(settings.reranker_path)
+        self.config = ChunkRagConfig()
+        self.fusion = HybridFusion(
+            weights={
+                "multilingual_dense": self.config.fusion_weight_multilingual,
+                "lexical": self.config.fusion_weight_bm25,
+            }
+        )
+        self.reranker = QwenCausalReranker(self.reranker_backend, filter_threshold=0.0)
+        self.assembler = ContextAssembler(token_budget=self.config.token_budget)
+        self.legacy_chunks = [
+            self._build_legacy_chunk(idx, content, full_doc_id)
+            for idx, (content, full_doc_id) in enumerate(chunk_db)
+        ]
 
         # We will initialize zvec collection inline here or load it.
         self._init_zvec_collection()
@@ -49,7 +68,7 @@ class ZvecRAGEngine:
             vectors=zvec.VectorSchema(
                 "embedding",
                 zvec.DataType.VECTOR_FP32,
-                settings.embedder_dim
+                self._resolve_embedder_dimension()
             ),
         )
 
@@ -78,9 +97,7 @@ class ZvecRAGEngine:
             logger.info("ZVEC index build complete.")
         else:
             logger.info(f"Loading existing ZVEC index from {self.zvec_path}")
-            # Ensure it is created before opening
-            temp_col = zvec.create_and_open(path=str(self.zvec_path), schema=schema)
-            self.collection = temp_col
+            self.collection = zvec.open(path=str(self.zvec_path))
 
     async def aclear_cache(self):
         """Mock method to be compatible with main.py calls"""
@@ -98,10 +115,7 @@ class ZvecRAGEngine:
         prompt_for_search = self._prepare_search_prompt(query)
         search_queries_str = await generate_with_llm(prompt=prompt_for_search)
 
-        list_of_search_queries = list(set(filter(
-            lambda it2: len(it2) > 0,
-            map(lambda it1: it1.strip(), search_queries_str.split('\n'))
-        )))
+        list_of_search_queries = self._parse_search_queries(search_queries_str)
 
         is_meaningless = False
         for cur_query in list_of_search_queries:
@@ -110,57 +124,34 @@ class ZvecRAGEngine:
                 is_meaningless = True
                 break
 
-        if is_meaningless or not list_of_search_queries:
+        if is_meaningless:
             return "К сожалению, не удалось сформулировать поисковые запросы для этого вопроса."
 
         logger.info(f"Generated search queries: {list_of_search_queries}")
 
         # Step 2: Retrieve chunks
-        union_of_relevant_indices: Dict[int, float] = {}
         top_k = getattr(param, 'chunk_top_k', settings.chunk_top_k) if param else settings.chunk_top_k
+        retrieval_queries = self._stable_unique([query] + list_of_search_queries)
+        grouped_results: Dict[str, list[list[RetrievedChunk]]] = {
+            "multilingual_dense": [],
+            "lexical": [],
+        }
 
-        for cur_search_query in list_of_search_queries + [query]:
-            # ZVEC Search
-            question_vector_res = self.embedder.encode([cur_search_query], return_dense=True, return_sparse=False)
-            q_vec = question_vector_res["dense_embeddings"][0].detach().cpu().numpy().tolist()
+        for cur_search_query in retrieval_queries:
+            grouped_results["multilingual_dense"].append(self._dense_results(cur_search_query, top_k))
+            grouped_results["lexical"].append(self._bm25_results(cur_search_query, top_k))
 
-            zvec_results = self.collection.query(
-                zvec.VectorQuery("embedding", vector=q_vec),
-                topk=top_k
-            )
-            zvec_ids = [int(r['id']) for r in zvec_results]
-
-            # BM25 Search
-            bm25_q = self._prepare_text_for_bm25(cur_search_query)
-            chunk_scores = self.bm25.get_scores(bm25_q)
-            bm25_ids = list(range(len(chunk_scores)))
-            ordered_bm25 = sorted(zip(bm25_ids, chunk_scores), key=lambda it: (-it[1], it[0]))[:top_k]
-            bm25_ids = [it[0] for it in ordered_bm25]
-
-            united_ids = set(zvec_ids) | set(bm25_ids)
-
-            # Step 3: Rerank
-            if united_ids:
-                reranked_chunks = await self._rerank(cur_search_query, list(united_ids), top_k)
-                for chunk_idx, score in reranked_chunks.items():
-                    if chunk_idx in union_of_relevant_indices:
-                        union_of_relevant_indices[chunk_idx] = max(union_of_relevant_indices[chunk_idx], score)
-                    else:
-                        union_of_relevant_indices[chunk_idx] = score
-
-        if not union_of_relevant_indices:
+        if not any(result for result_lists in grouped_results.values() for result in result_lists):
             return "К сожалению, в базе данных недостаточно информации для ответа на этот вопрос."
 
-        # Step 4: Prep Answer Context
-        # Select best overall chunks
-        best_chunks_idx = sorted(union_of_relevant_indices.keys(), key=lambda k: -union_of_relevant_indices[k])[
-            :settings.chunk_top_k]
+        fusion_result = self.fusion.fuse(grouped_results, top_k=top_k)
+        if not fusion_result.chunks:
+            return "К сожалению, в базе данных недостаточно информации для ответа на этот вопрос."
 
-        context_str = ""
-        for i, idx in enumerate(best_chunks_idx):
-            content, doc_id = self.chunk_db[idx]
-            context_str += f"[Фрагмент {i + 1} из {doc_id}]: {content}\n\n"
-
+        rerank_result = await self.reranker.rerank(query=query, chunks=fusion_result.chunks, top_n=top_k)
+        context_str, _sources = self.assembler.assemble(rerank_result.reranked_chunks)
+        if not context_str.strip():
+            return "К сожалению, в базе данных недостаточно информации для ответа на этот вопрос."
         qa_prompt = f"Контекст:\n{context_str}\n\nВопрос:\n{query}"
 
         # Step 5: Generation
@@ -191,37 +182,88 @@ class ZvecRAGEngine:
         # Here we just check equality to avoid external deps if not strictly needed.
         return 0.0 if t1.strip().lower() == t2.strip().lower() else 1.0
 
-    def _prepare_text_for_bm25(self, text: str) -> List[str]:
-        words = []
-        for w in text.split():
-            if w.isalnum():
-                words.append(_snow.stem(w.lower()).strip())
-        return words
+    def _dense_results(self, query: str, top_k: int) -> list[RetrievedChunk]:
+        question_vector_res = self.embedder.encode([query], return_dense=True, return_sparse=False)
+        q_vec = question_vector_res["dense_embeddings"][0].detach().cpu().numpy().tolist()
+        zvec_results = self.collection.query(
+            zvec.VectorQuery("embedding", vector=q_vec),
+            topk=top_k
+        )
+        results: list[RetrievedChunk] = []
+        for result in zvec_results:
+            idx = int(result["id"])
+            if idx >= len(self.legacy_chunks):
+                continue
+            results.append(
+                RetrievedChunk(
+                    chunk=self.legacy_chunks[idx],
+                    score=float(result.get("score", 0.0)),
+                    source="multilingual_dense",
+                )
+            )
+        return results
 
-    async def _rerank(self, query: str, chunk_ids: List[int], top_n: int) -> Dict[int, float]:
-        if _reranker_model is None or _reranker_tokenizer is None:
-            return {i: 1.0 for i in chunk_ids[:top_n]}
+    def _bm25_results(self, query: str, top_k: int) -> list[RetrievedChunk]:
+        bm25_terms = tokenize_for_bm25(query)
+        if not bm25_terms:
+            return []
+        chunk_scores = np.asarray(self.bm25.get_scores(bm25_terms), dtype=float)
+        indices = self._top_positive_indices(chunk_scores, top_k)
+        return [
+            RetrievedChunk(
+                chunk=self.legacy_chunks[idx],
+                score=float(chunk_scores[idx]),
+                source="lexical",
+            )
+            for idx in indices
+            if idx < len(self.legacy_chunks)
+        ]
 
-        docs = [self.chunk_db[i][0] for i in chunk_ids]
+    @staticmethod
+    def _top_positive_indices(scores: np.ndarray, top_k: int) -> list[int]:
+        positive_indices = np.flatnonzero(scores > 0)
+        if positive_indices.size == 0:
+            return []
+        if positive_indices.size <= top_k:
+            candidates = positive_indices.tolist()
+        else:
+            candidate_positions = np.argpartition(scores[positive_indices], -top_k)[-top_k:]
+            candidates = positive_indices[candidate_positions].tolist()
+        return sorted(candidates, key=lambda idx: (-float(scores[idx]), idx))
 
-        import torch
-        device = next(_reranker_model.parameters()).device
-        scores = []
-        minibatch_size = 4
-        import math
-        num_batches = math.ceil(len(docs) / minibatch_size)
+    @staticmethod
+    def _stable_unique(items: List[str]) -> List[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = item.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
 
-        for batch_idx in range(num_batches):
-            batch_start = batch_idx * minibatch_size
-            batch_end = min(len(docs), batch_start + minibatch_size)
-            pairs = [[query, d] for d in docs[batch_start:batch_end]]
+    def _parse_search_queries(self, search_queries_str: str) -> list[str]:
+        return self._stable_unique(search_queries_str.splitlines())[:2]
 
-            with torch.no_grad():
-                inputs = _reranker_tokenizer(pairs, padding=True, truncation=True, return_tensors='pt',
-                                             max_length=512).to(device)
-                scores += _reranker_model(**inputs, return_dict=True).logits.view(-1, ).float().cpu().numpy().tolist()
+    def _resolve_embedder_dimension(self) -> int:
+        return int(getattr(self.embedder.model.config, "hidden_size"))
 
-        scored_docs = list(zip(chunk_ids, scores))
-        scored_docs.sort(key=lambda x: -x[1])
+    @staticmethod
+    def _normalize_document_id(full_doc_id: str) -> str:
+        chunk_marker = full_doc_id.find("_chunk")
+        return full_doc_id[:chunk_marker] if chunk_marker > 0 else full_doc_id
 
-        return {id_: score for id_, score in scored_docs[:top_n]}
+    def _build_legacy_chunk(self, idx: int, content: str, full_doc_id: str) -> Chunk:
+        document_id = self._normalize_document_id(full_doc_id)
+        return Chunk(
+            chunk_id=f"legacy_chunk_{idx}",
+            text=content,
+            text_for_dense=content,
+            text_for_bm25=" ".join(tokenize_for_bm25(content)),
+            metadata=ChunkMetadata(
+                document_id=document_id,
+                document_title=document_id,
+                chunk_index=idx,
+            ),
+        )

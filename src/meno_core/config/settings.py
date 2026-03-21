@@ -19,10 +19,18 @@ class Settings(BaseSettings):
         validation_alias="LLM_MODEL_NAME",
     )
 
-    # Embedding
-    local_embedder_path: Optional[Path] = Field(
-        default=None,
-        validation_alias="LOCAL_EMBEDDER_PATH",
+    # Embeddings / Reranker
+    multilingual_embedder_path: str = Field(
+        default="Alibaba-NLP/gte-multilingual-base",
+        validation_alias="MULTILINGUAL_EMBEDDER_PATH",
+    )
+    rus_embedder_path: str = Field(
+        default="deepvk/USER2-base",
+        validation_alias="RUS_EMBEDDER_PATH",
+    )
+    reranker_path: str = Field(
+        default="Qwen/Qwen3-Reranker-4B",
+        validation_alias="RERANKER_PATH",
     )
 
     # RAG
@@ -33,10 +41,6 @@ class Settings(BaseSettings):
     abbreviations_path: Optional[Path] = Field(
         default=None,
         validation_alias=AliasChoices("ABBREVIATIONS_PATH", "ABBREVIATIONS_FILE"),
-    )
-    rag_engine_type: Literal["lightrag", "zvec"] = Field(
-        default="lightrag",
-        validation_alias="RAG_ENGINE_TYPE"
     )
     query_mode: Literal["local", "global", "hybrid", "naive", "mix"] = Field(
         default="mix",
@@ -66,11 +70,26 @@ class Settings(BaseSettings):
     )
 
     # CHUNK RAG
-    kv_store_text_chunks_path: Path = Field(
-        default=Path("resources/lightrag_kg_v3/kv_store_text_chunks.json"),
-        validation_alias="KV_STORE_TEXT_CHUNKS_PATH"
+    chunk_rag_corpus_path: Path = Field(
+        default=Path("resources/data/chunk_rag_corpus_512.jsonl"),
+        validation_alias="CHUNK_RAG_CORPUS_PATH"
     )
-    chunk_rag_top_k_dense: int = Field(default=10, validation_alias="CHUNK_RAG_TOP_K_DENSE")
+    chunk_rag_data_path: Path = Field(
+        default=Path("resources/chunk_rag_data"),
+        validation_alias="CHUNK_RAG_DATA_PATH"
+    )
+    chunk_rag_auto_rebuild: bool = Field(
+        default=False,
+        validation_alias="CHUNK_RAG_AUTO_REBUILD",
+    )
+    chunk_rag_top_k_dense_multilingual: int = Field(
+        default=10,
+        validation_alias="CHUNK_RAG_TOP_K_DENSE_MULTILINGUAL",
+    )
+    chunk_rag_top_k_dense_russian: int = Field(
+        default=10,
+        validation_alias="CHUNK_RAG_TOP_K_DENSE_RUSSIAN",
+    )
     chunk_rag_top_k_bm25: int = Field(default=10, validation_alias="CHUNK_RAG_TOP_K_BM25")
     chunk_rag_top_k_after_fusion: int = Field(default=15, validation_alias="CHUNK_RAG_TOP_K_AFTER_FUSION")
     chunk_rag_top_n_after_rerank: int = Field(default=5, validation_alias="CHUNK_RAG_TOP_N_AFTER_RERANK")
@@ -79,18 +98,36 @@ class Settings(BaseSettings):
     chunk_rag_hypothetical_doc_enabled: bool = Field(default=True, validation_alias="CHUNK_RAG_HYPOTHETICAL_DOC_ENABLED")
     chunk_rag_reliability_mode_enabled: bool = Field(default=False, validation_alias="CHUNK_RAG_RELIABILITY_MODE_ENABLED")
     chunk_rag_hallucination_threshold: float = Field(default=0.4, validation_alias="CHUNK_RAG_HALLUCINATION_THRESHOLD")
+    chunk_rag_fusion_weight_multilingual: float = Field(
+        default=0.35,
+        validation_alias="CHUNK_RAG_FUSION_WEIGHT_MULTILINGUAL",
+    )
+    chunk_rag_fusion_weight_russian: float = Field(
+        default=0.35,
+        validation_alias="CHUNK_RAG_FUSION_WEIGHT_RUSSIAN",
+    )
+    chunk_rag_fusion_weight_bm25: float = Field(
+        default=0.30,
+        validation_alias="CHUNK_RAG_FUSION_WEIGHT_BM25",
+    )
+    chunk_rag_debug_retrieval: bool = Field(
+        default=False,
+        validation_alias="CHUNK_RAG_DEBUG_RETRIEVAL",
+    )
+    chunk_rag_retrieval_log_level: str = Field(
+        default="INFO",
+        validation_alias="CHUNK_RAG_RETRIEVAL_LOG_LEVEL",
+    )
+    chunk_rag_retrieval_preview_k: int = Field(
+        default=5,
+        validation_alias="CHUNK_RAG_RETRIEVAL_PREVIEW_K",
+    )
 
     # EMBEDDER
     embedder_dim: int = Field(default=768, validation_alias="EMBEDDER_DIM")
     embedder_max_tokens: int = Field(
         default=1024,
         validation_alias="EMBEDDER_MAX_TOKENS",
-    )
-
-    # RERANKER
-    local_reranker_path: Optional[Path] = Field(
-        default=None,
-        validation_alias="LOCAL_RERANKER_PATH",
     )
 
     # LIGHT RAG

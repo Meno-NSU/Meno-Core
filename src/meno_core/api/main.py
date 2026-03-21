@@ -11,8 +11,7 @@ import time
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from logging import Logger, Formatter
-from logging.handlers import RotatingFileHandler
+from logging import Logger
 from pathlib import Path
 from typing import List, Dict, Optional, Union, AsyncIterator, Any
 from typing import Literal, Tuple
@@ -21,38 +20,47 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[impo
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from lightrag import QueryParam  # type: ignore[import-untyped]
-from lightrag.utils import setup_logger  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
 from meno_core.config.settings import settings
 from meno_core.core.lightrag_engine import LightRAGEngine
 from meno_core.core.link_correcter import LinkCorrecter
 from meno_core.core.link_searcher import LinkSearcher
-from meno_core.core.rag_engine import initialize_rag, QUERY_MAX_TOKENS, TOP_K, resolve_anaphora, \
-    explain_abbreviations, get_current_period, ENTITY_MAX_TOKENS, RELATION_MAX_TOKENS, CHUNK_TOP_K, \
-    _current_model_override
+from meno_core.core.rag_engine import (
+    explain_abbreviations,
+    get_current_period,
+    initialize_rag,
+    llm_request_scope,
+    resolve_anaphora,
+)
+from meno_core.core.rag_runtime import (
+    RagBackendRegistry,
+    RagChatRequest,
+    RagSelectionError,
+    ChunkRagChatBackend,
+    build_public_rag_backend_registry,
+)
 from meno_core.core.prompts import SYSTEM_PROMPT_FOR_MENO
 from meno_core.core.vllm_registry import VLLMRegistry
-from meno_core.core.zvec_rag import ZvecRAGEngine
 from meno_core.infrastructure.logdb.log_collector import LogCollector
 from meno_core.api.arena import arena_router
 
-QUERY_MODE: Literal["local", "global", "hybrid", "naive", "mix"] = settings.query_mode
-
 LINKS_LOG_PATH: str = getattr(settings, "links_log_path", "logs/links_debug.log")
-LINKS_LOG_LEVEL: str = getattr(settings, "links_log_level", "DEBUG")  # DEBUG/INFO/WARNING
+LINKS_LOG_LEVEL: str = getattr(settings, "links_log_level", "INFO")  # DEBUG/INFO/WARNING
 LINKS_LOG_MAX_BYTES: int = getattr(settings, "links_log_max_bytes", 10 * 1024 * 1024)
 LINKS_LOG_BACKUP_COUNT: int = getattr(settings, "links_log_backup_count", 5)
 
 logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger: Logger = logging.getLogger(__name__)
+request_logger: Logger = logging.getLogger("meno_core.request")
+collector: Optional[LogCollector] = None
+_collector_disabled_reason: Optional[str] = None
 
 try:
-    collector: LogCollector = LogCollector()
+    collector = LogCollector()
 except Exception as e:
     logger.exception(f"Failed to initialize LogCollector: {str(e)}")
     pass
@@ -65,44 +73,51 @@ SCORES_CACHE_FILE: str = os.getenv("SCORES_CACHE_FILE", "question_scores.json")
 _scores_cache: Dict[str, Dict[str, Optional[str]]] = {}
 
 
+def _disable_collector(reason: Exception | str) -> None:
+    global collector, _collector_disabled_reason
+    if _collector_disabled_reason is None:
+        _collector_disabled_reason = str(reason)
+        logger.warning("Disabling LogCollector due to runtime failure: %s", _collector_disabled_reason)
+    collector = None
+
+
 def setup_links_logger(path: str, level: str = "DEBUG",
                        max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5) -> logging.Logger:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     links_logger: Logger = logging.getLogger("links")
     links_logger.setLevel(getattr(logging, level.upper(), logging.DEBUG))
-    # чтобы не дублировать записи при hot-reload
-    if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == os.path.abspath(path)
-               for h in links_logger.handlers):
-        fh: RotatingFileHandler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count,
-                                                      encoding="utf-8")
-        fmt: Formatter = logging.Formatter(
-            fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        fh.setFormatter(fmt)
-        links_logger.addHandler(fh)
+    links_logger.propagate = True
     return links_logger
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler, embedder_instance, bm25_instance, chunk_db_instance, vllm_registry, chunk_rag_orchestrator
+    global rag_instance, abbreviations, ref_searcher, ref_corrector, scheduler, embedder_instance, bm25_instance
+    global chunk_db_instance, vllm_registry, rag_backend_registry
     links_logger: Logger = setup_links_logger(
         LINKS_LOG_PATH, LINKS_LOG_LEVEL, LINKS_LOG_MAX_BYTES, LINKS_LOG_BACKUP_COUNT
     )
-    setup_logger("light_rag_log", "WARNING", False, str(settings.log_file_path))
+    light_rag_logger = logging.getLogger("light_rag_log")
+    light_rag_logger.setLevel(logging.WARNING)
+    light_rag_logger.handlers.clear()
+    light_rag_logger.propagate = True
     rag_instance, embedder_instance, bm25_instance, chunk_db_instance = await initialize_rag()
+    if not isinstance(rag_instance, LightRAGEngine):
+        raise RuntimeError("Public lightrag backend is unavailable. initialize_rag() must return LightRAGEngine.")
     
     from meno_core.core.rag.factory import build_chunk_rag_orchestrator
-    # We point to resources/chunk_rag_data where our init script builds the offline models
-    chunk_rag_data_path = Path("resources/chunk_rag_data")
     chunk_rag_orchestrator = await build_chunk_rag_orchestrator(
-        working_dir=chunk_rag_data_path,
+        working_dir=settings.chunk_rag_data_path,
         embedder=embedder_instance
     )
-    if chunk_rag_orchestrator:
-        logger.info("⚡ ChunkRAG mode enabled globally.")
-        
+    lightrag_kb_id = settings.working_dir.name if settings.working_dir else "default-kb"
+    rag_backend_registry = build_public_rag_backend_registry(
+        lightrag_kb_id=lightrag_kb_id,
+        lightrag_backend=rag_instance,
+        chunk_rag_backend=ChunkRagChatBackend(chunk_rag_orchestrator),
+    )
+    logger.info("✅ Public RAG backend registry initialized with %d knowledge base(s).",
+                len(rag_backend_registry.list_knowledge_bases()))
+    logger.info("All backend logs are routed to stdout/stderr; separate file handlers are disabled.")
     logger.info("Background thread setup logic finished.")
     # ref_searcher = ReferenceSearcher(URLS_FNAME, model_name=LOCAL_EMBEDDER_NAME, threshold=0.75)
     if settings.enable_links_addition:
@@ -187,7 +202,7 @@ def create_app() -> FastAPI:
 app = create_app()
 app.include_router(arena_router)
 
-rag_instance: Optional[Union[LightRAGEngine, ZvecRAGEngine]] = None
+rag_instance: Optional[LightRAGEngine] = None
 embedder_instance = None
 bm25_instance = None
 chunk_db_instance = None
@@ -196,7 +211,7 @@ ref_searcher: Optional[LinkSearcher] = None
 ref_corrector: Optional[LinkCorrecter] = None
 scheduler: Optional[AsyncIOScheduler] = None
 vllm_registry: Optional[VLLMRegistry] = None
-chunk_rag_orchestrator = None
+rag_backend_registry: Optional[RagBackendRegistry] = None
 
 
 class ResetRequest(BaseModel):
@@ -226,7 +241,7 @@ class ImageOnlyRequest(BaseModel):
 
 
 class OAIChatCompletionsRequest(BaseModel):
-    model: str
+    model: Optional[str] = None
     messages: List[OAIMsg]
     stream: bool = False
     max_tokens: Optional[int] = None
@@ -236,6 +251,8 @@ class OAIChatCompletionsRequest(BaseModel):
     user: Optional[str] = None
     knowledge_base: Optional[str] = None
     knowledge_base_id: Optional[str] = None
+    rag_engine: Optional[str] = None
+    rag_engine_id: Optional[str] = None
 
     model_config = {
         "extra": "allow"
@@ -266,131 +283,230 @@ _JSON_BLOCK_RE = re.compile(r"```json\s*([\s\S]*?)\s*```", re.IGNORECASE)
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*}", re.MULTILINE)
 
 
+def _log_request_summary(
+    *,
+    request_id: str,
+    session_id: str,
+    knowledge_base_id: str,
+    rag_engine_id: str,
+    model: str,
+    route_reason: str,
+    started_at: float,
+    stage_ms: dict[str, float],
+    response_len: int,
+    stream: bool,
+) -> None:
+    request_logger.info(
+        "request-summary request_id=%s session_id=%s knowledge_base_id=%s rag_engine_id=%s model=%s route_reason=%s total_ms=%.2f stage_ms=%s response_len=%s stream=%s",
+        request_id,
+        session_id,
+        knowledge_base_id,
+        rag_engine_id,
+        model,
+        route_reason,
+        (time.perf_counter() - started_at) * 1000,
+        stage_ms,
+        response_len,
+        stream,
+    )
+
+
+def _default_model_name() -> str:
+    return settings.llm_model_name or "menon-1"
+
+
+def _build_model_not_found_response(model_id: str, available_models: list[str]) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": (
+                    f"Model '{model_id}' is not available on this vLLM endpoint. "
+                    f"Available models: {available_models}"
+                ),
+                "type": "invalid_request_error",
+                "code": "model_not_found",
+                "param": "model",
+            }
+        },
+    )
+
+
+async def _resolve_requested_model(requested_model: Optional[str]) -> tuple[str, Optional[str], Optional[JSONResponse]]:
+    normalized_model = requested_model.strip() if isinstance(requested_model, str) and requested_model.strip() else None
+    default_model = _default_model_name()
+
+    if vllm_registry is None:
+        return normalized_model or default_model, None, None
+
+    models = await vllm_registry.list_models()
+    available_models = [m["id"] for m in models]
+
+    if not available_models:
+        model_id = normalized_model or default_model
+        if normalized_model and model_id != default_model:
+            logger.warning(
+                "Rejected request for unknown model '%s'. Available: %s",
+                model_id,
+                available_models,
+            )
+            return model_id, None, _build_model_not_found_response(model_id, available_models)
+
+        logger.warning(
+            "vLLM registry returned no models; falling back to configured default model '%s'.",
+            model_id,
+        )
+        return model_id, None, None
+
+    if default_model not in available_models:
+        logger.warning(
+            "Configured default model '%s' is unavailable in the registry; falling back to '%s'.",
+            default_model,
+            available_models[0],
+        )
+        default_model = available_models[0]
+
+    model_id = normalized_model or default_model
+    if model_id not in available_models:
+        logger.warning(
+            "Rejected request for unknown model '%s'. Available: %s",
+            model_id,
+            available_models,
+        )
+        return model_id, None, _build_model_not_found_response(model_id, available_models)
+
+    endpoint = vllm_registry.lookup_endpoint(model_id)
+    return model_id, f"{endpoint}/v1" if endpoint else None, None
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: OAIChatCompletionsRequest):
-    if rag_instance is None and chunk_rag_orchestrator is None:
+    if rag_backend_registry is None:
         raise RuntimeError("RAG is not initialized.")
     created_ts: int = int(time.time())
     completion_id: str = f"chatcmpl-{uuid.uuid4().hex}"
-    model_id: str = request.model or "menon-1"
-
-    if vllm_registry is not None:
-        if not await vllm_registry.is_valid_model(model_id):
-            available_models = [m["id"] for m in await vllm_registry.list_models()]
-            logger.warning(
-                "Rejected request for unknown model '%s'. Available: %s",
-                model_id, available_models,
-            )
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": {
-                        "message": (
-                            f"Model '{model_id}' is not available on this vLLM endpoint. "
-                            f"Available models: {available_models}"
-                        ),
-                        "type": "invalid_request_error",
-                        "code": "model_not_found",
-                        "param": "model",
-                    }
-                },
-            )
-
-    # Set the model override so rag_engine LLM calls use the UI-selected model
-    _current_model_override.set(model_id)
+    request_started_at = time.perf_counter()
+    request_timings_ms: Dict[str, float] = {}
+    selected_knowledge_base_id = "unknown"
+    selected_rag_engine_id = "unknown"
+    route_reason = "unknown"
+    model_id, explicit_base_url, model_error = await _resolve_requested_model(request.model)
+    if model_error is not None:
+        return model_error
     session_id: str = request.user or f"session-{completion_id}"
 
-    try:
-        collector.create_message(session_id=session_id)
-    except Exception as creating_message_error:
-        logger.exception("Failed to create message", exc_info=creating_message_error)
-        pass
+    if collector is not None:
+        try:
+            collector.create_message(session_id=session_id)
+        except Exception as creating_message_error:
+            _disable_collector(creating_message_error)
 
+    prompt_started_at = time.perf_counter()
     formatted_system_prompt, query, history = await _build_prompt_and_history(request.messages)
+    request_timings_ms["prompt_build"] = round((time.perf_counter() - prompt_started_at) * 1000, 2)
 
-    try:
-        collector.add_question(session_id=session_id, text=query)
-    except Exception as adding_question_error:
-        logger.exception("Failed to add question", exc_info=adding_question_error)
-        pass
+    if collector is not None:
+        try:
+            collector.add_question(session_id=session_id, text=query)
+        except Exception as adding_question_error:
+            _disable_collector(adding_question_error)
 
+    expand_started_at = time.perf_counter()
     try:
-        expanded_query: str = await explain_abbreviations(query, abbreviations)
+        expanded_query: str = await explain_abbreviations(query, abbreviations, override_model=model_id, override_base_url=explicit_base_url)
 
     except Exception as explain_error:
         logger.exception("Abbreviation explanation failed", exc_info=explain_error)
         expanded_query = query
+    request_timings_ms["expand"] = round((time.perf_counter() - expand_started_at) * 1000, 2)
+
+    resolve_started_at = time.perf_counter()
     try:
-        resolved_query: str = await resolve_anaphora(expanded_query, history)
+        resolved_query: str = await resolve_anaphora(expanded_query, history, override_model=model_id, override_base_url=explicit_base_url)
     except Exception as resolve_error:
         logger.exception("Anaphora resolution failed", exc_info=resolve_error)
         resolved_query = expanded_query
+    request_timings_ms["resolve"] = round((time.perf_counter() - resolve_started_at) * 1000, 2)
+    request_timings_ms["request_prepare"] = round(
+        request_timings_ms["prompt_build"] + request_timings_ms["expand"] + request_timings_ms["resolve"],
+        2,
+    )
 
-    try:
-        collector.add_expanded_question(session_id=session_id, text=expanded_query)
-        collector.add_resolved_question(session_id=session_id, text=resolved_query)
-    except Exception as resolve_error:
-        logger.exception("Failed to add expanded/resolved question", exc_info=resolve_error)
-        pass
-
-    collector.update_time(session_id=session_id)
-
-    async def run_lightrag():
-        # Override to hook chunk RAG orchestrator if configured appropriately
-        # Or if the user explicitly selected this knowledge base
-        kb_id = getattr(request, "knowledge_base", None) or getattr(request, "knowledge_base_id", None)
-        req_extra = request.model_dump().get("knowledge_base") or request.model_dump().get("kb_id")
-        selected_kb = kb_id or req_extra
-        
-        should_use_chunk_rag = False
-        if chunk_rag_orchestrator:
-            if settings.rag_engine_type == "zvec":
-                should_use_chunk_rag = True
-            elif selected_kb == "chunk-rag-kb":
-                should_use_chunk_rag = True
-
-        if should_use_chunk_rag and chunk_rag_orchestrator:
-            from meno_core.core.rag.models import RagRequest, RagMessage
-            logger.info("Routing query to new Chunk RAG Mode.")
-            
-            # Map history format
-            rag_msgs = []
-            for h in history:
-                rag_msgs.append(RagMessage(role=h["role"], text=h["content"]))
-                
-            chunk_req = RagRequest(question=resolved_query, history=rag_msgs, session_id=session_id)
-            response = await chunk_rag_orchestrator.answer(chunk_req)
-            return response.answer
-        
-        # Legacy callback
+    if collector is not None:
         try:
-            return await rag_instance.aquery(
-                resolved_query,
-                param=QueryParam(
-                    mode=QUERY_MODE,
-                    top_k=TOP_K,
-                    chunk_top_k=CHUNK_TOP_K,
-                    max_total_tokens=QUERY_MAX_TOKENS,
-                    history_turns=len(history),
-                    conversation_history=history,
-                    max_entity_tokens=ENTITY_MAX_TOKENS,
-                    max_relation_tokens=RELATION_MAX_TOKENS,
-                    stream=request.stream,
-                ),
-                system_prompt=formatted_system_prompt
-            )
+            collector.add_expanded_question(session_id=session_id, text=expanded_query)
+            collector.add_resolved_question(session_id=session_id, text=resolved_query)
+        except Exception as collector_update_error:
+            _disable_collector(collector_update_error)
+
+    if collector is not None:
+        try:
+            collector.update_time(session_id=session_id)
+        except Exception as collector_time_error:
+            _disable_collector(collector_time_error)
+
+    extra_payload = request.model_extra or {}
+    requested_kb = request.knowledge_base_id or request.knowledge_base or extra_payload.get("kb_id")
+    requested_engine = (
+        request.rag_engine_id
+        or request.rag_engine
+        or extra_payload.get("engine_id")
+        or extra_payload.get("rag_engine")
+    )
+    dispatch_started_at = time.perf_counter()
+    try:
+        backend_entry, route_reason = rag_backend_registry.resolve(requested_kb, requested_engine)
+    except RagSelectionError as selection_error:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": str(selection_error),
+                    "type": "invalid_request_error",
+                    "param": "knowledge_base_id/rag_engine_id",
+                }
+            },
+        )
+    request_timings_ms["dispatch"] = round((time.perf_counter() - dispatch_started_at) * 1000, 2)
+    selected_knowledge_base_id = backend_entry.knowledge_base_id
+    selected_rag_engine_id = backend_entry.rag_engine_id
+    logger.info(
+        "Routing request_id=%s session_id=%s knowledge_base_id=%s rag_engine_id=%s (%s).",
+        completion_id,
+        session_id,
+        selected_knowledge_base_id,
+        selected_rag_engine_id,
+        route_reason,
+    )
+
+    backend_request = RagChatRequest(
+        question=resolved_query,
+        history=history,
+        system_prompt=formatted_system_prompt,
+        stream=request.stream,
+        session_id=session_id,
+        request_id=completion_id,
+        model=model_id,
+        knowledge_base_id=selected_knowledge_base_id,
+        rag_engine_id=selected_rag_engine_id,
+        route_reason=route_reason,
+        base_url=explicit_base_url,
+    )
+
+    async def run_rag_backend_non_stream():
+        try:
+            with llm_request_scope(model_id, explicit_base_url):
+                return await backend_entry.backend.answer(
+                    backend_request,
+                    timings_sink=request_timings_ms,
+                )
         except Exception as e:
-            logger.error(f"Error querying RAG: {e}", exc_info=True)
-            # For non-streaming, re-raise to be caught by the outer try-except
-            # For streaming, this will be caught by the sse_generator's try-except
+            logger.error(f"Error querying RAG backend: {e}", exc_info=True)
             raise
 
     if not request.stream:
         try:
-            response = await run_lightrag()  # type: ignore[misc]
-            # Log successful query
-            # The original instruction had a malformed `log_data.update` here.
-            # Assuming the intent was to rename `result` to `response` and keep the logic.
+            response = await run_rag_backend_non_stream()  # type: ignore[misc]
             if hasattr(response, "__aiter__"):
                 chunks = []
                 async for part in response:
@@ -423,12 +539,24 @@ async def chat_completions(request: OAIChatCompletionsRequest):
             #     logger.exception("Hallucination scoring failed")
             #     pass
 
-            try:
-                collector.add_model_answer(session_id=session_id, text=content)
-                collector.print_dto(session_id=session_id)
-            except Exception as err:
-                logger.exception("Failed to add model answer", exc_info=err)
-                pass
+            if collector is not None:
+                try:
+                    collector.add_model_answer(session_id=session_id, text=content)
+                except Exception as collector_answer_error:
+                    _disable_collector(collector_answer_error)
+
+            _log_request_summary(
+                request_id=completion_id,
+                session_id=session_id,
+                knowledge_base_id=selected_knowledge_base_id,
+                rag_engine_id=selected_rag_engine_id,
+                model=model_id,
+                route_reason=route_reason,
+                started_at=request_started_at,
+                stage_ms=request_timings_ms,
+                response_len=len(content),
+                stream=request.stream,
+            )
 
         except Exception as non_stream_error:
             logger.exception("chat.completions non-stream error")
@@ -480,23 +608,27 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         accumulated: list[str] = []
 
         try:
-            result: str | AsyncIterator[str] = await run_lightrag()
+            with llm_request_scope(model_id, explicit_base_url):
+                result: str | AsyncIterator[str] = await backend_entry.backend.answer(
+                    backend_request,
+                    timings_sink=request_timings_ms,
+                )
 
-            async def iter_pieces():
-                if hasattr(result, "__aiter__"):
-                    async for part in result:
-                        if part:
-                            yield str(part)
-                else:
-                    text: str = str(result)
-                    step: int = 512
-                    for i in range(0, len(text), step):
-                        yield text[i:i + step]
+                async def iter_pieces():
+                    if hasattr(result, "__aiter__"):
+                        async for part in result:
+                            if part:
+                                yield str(part)
+                    else:
+                        text: str = str(result)
+                        step: int = 512
+                        for i in range(0, len(text), step):
+                            yield text[i:i + step]
 
-            async for piece in iter_pieces():
-                accumulated.append(piece)
-                data: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({"content": piece})
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                async for piece in iter_pieces():
+                    accumulated.append(piece)
+                    data: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({"content": piece})
+                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
             done: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({}, finish_reason="stop")
             yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
@@ -505,9 +637,21 @@ async def chat_completions(request: OAIChatCompletionsRequest):
             if collector is not None:
                 try:
                     collector.add_model_answer(session_id=session_id, text=full_answer)
-                    collector.print_dto(session_id=session_id)
                 except Exception as collector_error:
-                    logger.exception("Failed to add model answer (stream)", exc_info=collector_error)
+                    _disable_collector(collector_error)
+
+            _log_request_summary(
+                request_id=completion_id,
+                session_id=session_id,
+                knowledge_base_id=selected_knowledge_base_id,
+                rag_engine_id=selected_rag_engine_id,
+                model=model_id,
+                route_reason=route_reason,
+                started_at=request_started_at,
+                stage_ms=request_timings_ms,
+                response_len=len(full_answer),
+                stream=request.stream,
+            )
 
         except Exception as stream_error:
             logger.exception("chat.completions stream error")
@@ -658,7 +802,7 @@ async def list_models():
         if models:
             return {"object": "list", "data": models}
     # Fallback: return the single configured model
-    model_name = settings.llm_model_name or "menon-1"
+    model_name = _default_model_name()
     return {
         "object": "list",
         "data": [{
@@ -684,24 +828,10 @@ async def refresh_models():
 
 @app.get("/v1/knowledge-bases")
 async def list_knowledge_bases():
-    kb_name = "default-kb"
-    if settings.working_dir:
-        kb_name = settings.working_dir.name
-        
-    kbs = [{
-        "id": kb_name,
-        "name": "Основная база знаний (Граф)",
-        "description": "База знаний по умолчанию на основе графов знаний"
-    }]
-    
-    if chunk_rag_orchestrator is not None:
-        kbs.append({
-            "id": "chunk-rag-kb",
-            "name": "Прямой поиск по параграфам (Chunk RAG)",
-            "description": "Использует семантический (zvec) и лексический (BM25) поиск по точным параграфам."
-        })
-        
+    if rag_backend_registry is None:
+        raise RuntimeError("RAG registry is not initialized.")
     return {
         "object": "list",
-        "data": kbs
+        "data": rag_backend_registry.list_knowledge_bases(),
+        "default_selection": rag_backend_registry.default_payload(),
     }

@@ -4,7 +4,9 @@ import logging
 import math
 import os
 import re
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from logging import Logger
@@ -25,19 +27,21 @@ from nltk import wordpunct_tokenize  # type: ignore[import]
 from nltk.stem.snowball import SnowballStemmer  # type: ignore[import]
 from rank_bm25 import BM25Okapi  # type: ignore[import]
 from torch import Tensor
-from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification  # type: ignore[import]
+from transformers import AutoModelForTokenClassification  # type: ignore[import]
 from transformers import AutoTokenizer, AutoModel  # type: ignore[import]
 
 from meno_core.config.settings import settings
 from meno_core.core.gte_embedding import GTEEmbedding
+from meno_core.core.lightrag_timing import get_current_rag_trace
+from meno_core.core.lexical_normalizer import normalize_for_bm25, tokenize_for_bm25
 from meno_core.core.prompts import (
     TEMPLATE_FOR_ABBREVIATION_EXPLAINING,
     SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
     FEW_SHOTS_FOR_ANAPHORA,
 )
+from meno_core.core.rag.rerank.qwen_reranker import load_cached_qwen_reranker_backend, QwenRerankerBackend
 
-_reranker_tokenizer = None
-_reranker_model = None
+_reranker_backend: QwenRerankerBackend | None = None
 
 TEMPERATURE: float = settings.temperature
 QUERY_MAX_TOKENS: int = settings.query_max_tokens
@@ -47,19 +51,15 @@ RELATION_MAX_TOKENS: int = settings.relation_max_tokens
 TOP_K: int = settings.top_k
 CHUNK_TOP_K: int = settings.chunk_top_k
 WORKING_DIR: Path = Path(settings.working_dir) if settings.working_dir else Path("./tmp_working_dir")
-print(f'os.path.isdir({WORKING_DIR}) = {os.path.isdir(str(WORKING_DIR))}')
 ABBREVIATIONS_PATH: Path | None = settings.abbreviations_path
-print(f'os.path.isfile({ABBREVIATIONS_PATH}) = {os.path.isfile(str(ABBREVIATIONS_PATH))}')
 URLS_PATH: str = str(settings.urls_path)
-print(f'os.path.isfile({URLS_PATH}) = {os.path.isfile(str(URLS_PATH))}')
-LOCAL_EMBEDDER_DIMENSION: int = settings.embedder_dim
-LOCAL_EMBEDDER_MAX_TOKENS: int = settings.embedder_max_tokens
-LOCAL_EMBEDDER_PATH: Path | None = settings.local_embedder_path
-LOCAL_RERANKER_MAX_TOKENS: int = 4096
-LOCAL_RERANKER_PATH: Path | None = settings.local_reranker_path
+MULTILINGUAL_EMBEDDER_DIMENSION: int = settings.embedder_dim
+MULTILINGUAL_EMBEDDER_MAX_TOKENS: int = settings.embedder_max_tokens
+MULTILINGUAL_EMBEDDER_PATH: str = settings.multilingual_embedder_path
+RERANKER_PATH: str = settings.reranker_path
 DEFAULT_HALLUCINATION_THRESHOLD: float = 0.3
-print(f'os.path.isdir({LOCAL_EMBEDDER_PATH}) = {os.path.isdir(str(LOCAL_EMBEDDER_PATH))}')
 
+THINK_START_TOKEN = '<think>'
 THINK_END_TOKEN = '</think>'
 
 # ── Model override via contextvars ──
@@ -67,6 +67,9 @@ THINK_END_TOKEN = '</think>'
 # chosen by the user in the UI, not the hardcoded settings value.
 _current_model_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     '_current_model_override', default=None
+)
+_current_base_url_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    '_current_base_url_override', default=None
 )
 
 
@@ -131,6 +134,155 @@ def _coerce_llm_response_to_json_block(text: str) -> str:
     return _as_json_block(obj)
 
 
+def resolve_llm_request(
+    override_model: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    return (
+        override_model or _current_model_override.get() or settings.llm_model_name or "menon-1",
+        override_base_url or _current_base_url_override.get() or settings.openai_base_url,
+    )
+
+
+@contextmanager
+def llm_request_scope(
+    override_model: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+) -> Iterator[None]:
+    model_token = _current_model_override.set(override_model)
+    base_url_token = _current_base_url_override.set(override_base_url)
+    try:
+        yield
+    finally:
+        _current_base_url_override.reset(base_url_token)
+        _current_model_override.reset(model_token)
+
+
+def _strip_reasoning_prefix(text: str) -> str:
+    thinking_end_position = text.find(THINK_END_TOKEN)
+    if thinking_end_position >= 0:
+        logger.debug(
+            "Reasoning part was removed from 0 to %s position",
+            thinking_end_position,
+        )
+        return text[thinking_end_position + len(THINK_END_TOKEN):]
+    return text
+
+
+async def _single_chunk_stream(text: str) -> AsyncIterator[str]:
+    if text:
+        yield text
+
+
+async def _normalize_streaming_llm_result(result: Any) -> AsyncIterator[str]:
+    if isinstance(result, str):
+        async for part in _single_chunk_stream(_strip_reasoning_prefix(result).strip()):
+            yield part
+        return
+
+    buffer = ""
+    hiding_thinking: Optional[bool] = None
+
+    async for part in result:
+        text = "" if part is None else str(part)
+        if not text:
+            continue
+
+        if hiding_thinking is False:
+            yield text
+            continue
+
+        buffer += text
+
+        if hiding_thinking is None:
+            if THINK_START_TOKEN.startswith(buffer):
+                continue
+            if not buffer.startswith(THINK_START_TOKEN):
+                hiding_thinking = False
+                yield buffer
+                buffer = ""
+                continue
+            hiding_thinking = True
+
+        if hiding_thinking and THINK_END_TOKEN in buffer:
+            _, remainder = buffer.split(THINK_END_TOKEN, 1)
+            if remainder:
+                yield remainder
+            buffer = ""
+            hiding_thinking = False
+
+    if buffer:
+        yield _strip_reasoning_prefix(buffer) if hiding_thinking else buffer
+
+
+async def call_openai_llm(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    history_messages: Optional[List[Any]] = None,
+    *,
+    stream: bool = False,
+    enable_cot: bool = False,
+    hashing_kv=None,
+    override_model: Optional[str] = None,
+    override_base_url: Optional[str] = None,
+    **kwargs: Any,
+) -> Union[str, AsyncIterator[str]]:
+    if history_messages is None:
+        history_messages = []
+
+    effective_model, effective_base_url = resolve_llm_request(
+        override_model=override_model,
+        override_base_url=override_base_url,
+    )
+    logger.debug(
+        "Sending request to LLM (model=%s) with %s history messages, prompt_len=%s, stream=%s",
+        effective_model,
+        len(history_messages),
+        len(prompt),
+        stream,
+    )
+
+    trace = get_current_rag_trace()
+    llm_started_at = time.perf_counter()
+    result = await openai_complete_if_cache(
+        model=effective_model,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        enable_cot=enable_cot,
+        hashing_kv=hashing_kv,
+        api_key=settings.openai_api_key,
+        base_url=effective_base_url,
+        stream=stream,
+        **kwargs,
+    )
+
+    if trace is not None:
+        trace.record_stage(
+            "llm_open" if stream else "llm_nonstream",
+            (time.perf_counter() - llm_started_at) * 1000,
+            meta={
+                "model": effective_model,
+                "history_messages": len(history_messages),
+                "prompt_len": len(prompt),
+            },
+        )
+        if stream:
+            trace.mark_llm_stream_open()
+
+    if stream:
+        return _normalize_streaming_llm_result(result)
+
+    if not isinstance(result, str):
+        chunks: list[str] = []
+        async for part in result:
+            chunks.append(str(part))
+        result = "".join(chunks)
+
+    logger.debug("Received raw LLM answer, length=%s", len(result))
+    return _strip_reasoning_prefix(result).strip()
+
+
 # ---------- LLM wrapper ----------
 async def llm_model_func(prompt: str,
                          system_prompt: Optional[str] = None,
@@ -152,46 +304,24 @@ async def llm_model_func(prompt: str,
     Возвращает:
     - str: Ответ, сгенерированный языковой моделью.
     """
-    if history_messages is None:
-        history_messages = []
     effective_model = _current_model_override.get() or settings.llm_model_name
     try:
-        logger.info(f"Sending request to LLM (model={effective_model}) with {len(history_messages)} messages, prompt: {prompt}")
-        if not stream:
-            answer: str = await generate_with_llm(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                enable_cot=enable_cot,
-                hashing_kv=hashing_kv,
-                **kwargs,
-            )
-            logger.info(f"Received response from LLM, length: {len(answer)}")
-            return answer
-
-        result = await openai_complete_if_cache(
-            model=effective_model,
+        override_model = kwargs.pop("override_model", None) or kwargs.pop("model", None)
+        override_base_url = kwargs.pop("override_base_url", None) or kwargs.pop("base_url", None)
+        return await call_openai_llm(
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            stream=stream,
             enable_cot=enable_cot,
             hashing_kv=hashing_kv,
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            stream=True,
+            override_model=override_model,
+            override_base_url=override_base_url,
             **kwargs,
         )
 
-        if isinstance(result, str):
-            async def _to_stream() -> AsyncIterator[str]:
-                yield result
-
-            return _to_stream()
-
-        return result
-
     except Exception as e:
-        logger.error(f"Error in llm_model_func: {str(e)}", exc_info=True)
+        logger.error("Error in llm_model_func (model=%s): %s", effective_model, str(e), exc_info=True)
         return "Извините, сейчас не удалось получить ответ от модели."
 
 
@@ -202,45 +332,30 @@ async def generate_with_llm(
         history_messages: Optional[List[Any]] = None,
         **kwargs: Any,
 ) -> str:
-    if history_messages is None:
-        history_messages = []
-    effective_model = _current_model_override.get() or settings.llm_model_name
+    override_model = kwargs.pop("override_model", None)
+    override_base_url = kwargs.pop("override_base_url", None)
 
     kwargs.pop("stream", None)
-
-    kwargs.pop("enable_cot", None)
-
-    result = await openai_complete_if_cache(
-        model=effective_model,
+    result = await call_openai_llm(
         prompt=prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        stream=False,
         enable_cot=False,
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        override_model=override_model,
+        override_base_url=override_base_url,
         **kwargs,
     )
+    if isinstance(result, str):
+        return result
 
-    if not isinstance(result, str):
-        chunks: list[str] = []
-        async for part in result:
-            chunks.append(part)
-        result = "".join(chunks)
-
-    logger.info(f"Full raw answer: {result.strip()}")
-
-    thinking_end_position = result.find(THINK_END_TOKEN)
-    if thinking_end_position >= 0:
-        logger.info(
-            "Reasoning part was removed from 0 to %s position",
-            thinking_end_position,
-        )
-        result = result[thinking_end_position + len(THINK_END_TOKEN):]
-
-    return result.strip()
+    chunks: list[str] = []
+    async for part in result:
+        chunks.append(part)
+    return "".join(chunks).strip()
 
 
-async def explain_abbreviations(question: str, abbreviations: dict) -> str:
+async def explain_abbreviations(question: str, abbreviations: dict, override_model: Optional[str] = None, override_base_url: Optional[str] = None) -> str:
     """
     Обрабатывает вопрос пользователя, заменяя аббревиатуры на их расшифровки.
 
@@ -280,7 +395,11 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
             abbreviations_dict=filtered_abbreviations,
             text_of_question=question
         )
-        new_improved_question = await generate_with_llm(prompt=user_prompt)
+        new_improved_question = await generate_with_llm(
+            prompt=user_prompt,
+            override_model=override_model,
+            override_base_url=override_base_url
+        )
         logger.debug(f"Improved question: {new_improved_question}")
         return new_improved_question
     except Exception as e:
@@ -288,7 +407,7 @@ async def explain_abbreviations(question: str, abbreviations: dict) -> str:
         return question
 
 
-async def resolve_anaphora(question: str, history: list) -> str:
+async def resolve_anaphora(question: str, history: list, override_model: Optional[str] = None, override_base_url: Optional[str] = None) -> str:
     """
     Обрабатывает вопрос пользователя, устраняя местоимённую анафору.
 
@@ -329,6 +448,8 @@ async def resolve_anaphora(question: str, history: list) -> str:
             prompt=user_prompt,
             system_prompt=SYSTEM_PROMPT_FOR_ANAPHORA_RESOLUTION,
             history_messages=FEW_SHOTS_FOR_ANAPHORA,
+            override_model=override_model,
+            override_base_url=override_base_url
         )
         logger.debug(f"Question after anaphora resolution: {question_without_anaphora}")
         return question_without_anaphora
@@ -340,16 +461,17 @@ async def resolve_anaphora(question: str, history: list) -> str:
 # ---------- Embedding function ----------
 # treat AutoModel and tokenizers as Any in signatures to avoid missing-stub attribute errors
 async def gte_hf_embed(texts: List[str], tokenizer: Any, embed_model: Any) -> np.ndarray:
+    started_at = time.perf_counter()
     try:
         device = next(embed_model.parameters()).device
         batch_dict = tokenizer(
             texts, return_tensors='pt',
-            max_length=LOCAL_EMBEDDER_MAX_TOKENS, padding=True, truncation=True,
+            max_length=MULTILINGUAL_EMBEDDER_MAX_TOKENS, padding=True, truncation=True,
         ).to(device)
         with torch.no_grad():
             outputs = embed_model(**batch_dict)
             embeddings: Tensor = F.normalize(
-                outputs.last_hidden_state[:, 0][:LOCAL_EMBEDDER_DIMENSION],
+                outputs.last_hidden_state[:, 0, :MULTILINGUAL_EMBEDDER_DIMENSION],
                 p=2, dim=1
             )
         result: np.ndarray
@@ -358,49 +480,52 @@ async def gte_hf_embed(texts: List[str], tokenizer: Any, embed_model: Any) -> np
         else:
             result = embeddings.detach().cpu().numpy()
 
-        logger.info(f"Embeddings for {texts} generated successfully")
+        logger.debug("Generated %s multilingual embeddings", len(texts))
         return result
     except Exception as e:
         logger.error(f"Error in gte_hf_embed: {str(e)}", exc_info=True)
         raise
+    finally:
+        trace = get_current_rag_trace()
+        if trace is not None:
+            text_count = len(texts)
+            trace.increment_counter("embedding_calls", 1)
+            trace.increment_counter("embedding_texts", text_count)
+            trace.record_stage(
+                "embedding_compute",
+                (time.perf_counter() - started_at) * 1000,
+                meta={"texts": text_count},
+            )
 
 
-async def gte_hf_rerank(
+async def qwen_hf_rerank(
         query: str,
         documents: List[str],
-        tokenizer: Any,
-        reranker: Any,
+        reranker_backend: QwenRerankerBackend,
         top_n: Optional[int] = None,
 ) -> List[dict[str, Any]]:
-    device = next(reranker.parameters()).device
-    scores = []
-    minibatch_size = 4
-    num_batches = math.ceil(len(documents) / minibatch_size)
-    for batch_idx in range(num_batches):
-        batch_start = batch_idx * minibatch_size
-        batch_end = min(len(documents), batch_start + minibatch_size)
-        pairs = [[query, cur_doc] for cur_doc in documents[batch_start:batch_end]]
-        with torch.no_grad():
-            inputs = tokenizer(pairs, padding=True, return_tensors='pt').to(device)
-            scores += reranker(**inputs, return_dict=True).logits.view(-1, ).float().cpu().numpy().tolist()
-            del inputs
-        del pairs
-    reranking_result = [{'index': doc_idx, 'relevance_score': float(scores[doc_idx])} for doc_idx in
-                        range(len(documents))]
-    if top_n is not None:
-        if top_n < len(reranking_result):
-            sorted_reranking_result = sorted(reranking_result, key=lambda it: -it['relevance_score'])
-            reranking_result = sorted(sorted_reranking_result[0:top_n], key=lambda it: it['index'])
-            del sorted_reranking_result
-    del scores
-    return reranking_result
+    started_at = time.perf_counter()
+    try:
+        return reranker_backend.rerank_documents(query=query, documents=documents, top_n=top_n)
+    finally:
+        trace = get_current_rag_trace()
+        if trace is not None:
+            trace.increment_counter("reranker_calls", 1)
+            trace.increment_counter("reranker_documents", len(documents))
+            trace.record_stage(
+                "reranker_model",
+                (time.perf_counter() - started_at) * 1000,
+                meta={
+                    "documents": len(documents),
+                    "top_n": top_n,
+                },
+            )
 
 
 async def score_answer_relevance_to_prompt(
         prompt: str,
         answer: str,
-        reranker_tokenizer: Any,
-        reranker_model: Any,
+        reranker_backend: QwenRerankerBackend,
         normalize: bool = True,
 ) -> float:
     """
@@ -409,10 +534,8 @@ async def score_answer_relevance_to_prompt(
 
     :param prompt: исходный пользовательский запрос / промпт
     :param answer: ответ модели, который хотим проверить на релевантность
-    :param reranker_tokenizer: токенизатор для LOCAL_RERANKER_PATH
-    :param reranker_model: AutoModelForSequenceClassification для LOCAL_RERANKER_PATH
-    :param normalize: если True — возвращает значение в [0,1] через сигмоиду,
-                      если False — сырое значение логита из реранкера
+    :param reranker_backend: causal-lm реранкер с yes/no scoring
+    :param normalize: сохранён для обратной совместимости; Qwen backend уже отдаёт значение в [0,1]
     :return: скор релевантности (float). Чем ближе к 1, тем ответ ближе к вопросу.
              Можно использовать пороги типа:
              - > 0.7 — ответ хорошо соответствует запросу
@@ -420,22 +543,18 @@ async def score_answer_relevance_to_prompt(
              - < 0.4 — высокая вероятность галлюцинаций/ухода от темы
     """
     try:
-        rerank_result = await gte_hf_rerank(
+        rerank_result = await qwen_hf_rerank(
             query=answer,
             documents=[prompt],
-            tokenizer=reranker_tokenizer,
-            reranker=reranker_model,
+            reranker_backend=reranker_backend,
             top_n=1,
         )
         raw_score: float = float(rerank_result[0]["relevance_score"])
-        logger.debug(f"Raw reranker score for answer vs prompt: {raw_score}")
+        logger.debug("Raw reranker score for answer vs prompt: %s", raw_score)
 
         if not normalize:
             return raw_score
-
-        prob = 1.0 / (1.0 + math.exp(-raw_score))
-        logger.debug(f"Normalized reranker score (sigmoid): {prob}")
-        return prob
+        return raw_score
 
     except Exception as e:
         logger.error(f"Error in score_answer_relevance_to_prompt: {str(e)}", exc_info=True)
@@ -464,7 +583,7 @@ async def is_likely_hallucination(
         logger.warning("is_likely_hallucination: empty prompt or answer")
         return True, 0.0
 
-    if _reranker_tokenizer is None or _reranker_model is None:
+    if _reranker_backend is None:
         logger.warning(
             "is_likely_hallucination: reranker is not initialized; "
             "returning (False, 0.0)"
@@ -475,8 +594,7 @@ async def is_likely_hallucination(
         score = await score_answer_relevance_to_prompt(
             prompt=original_prompt,
             answer=llm_answer,
-            reranker_tokenizer=_reranker_tokenizer,
-            reranker_model=_reranker_model,
+            reranker_backend=_reranker_backend,
             normalize=True,
         )
     except Exception as e:
@@ -492,7 +610,7 @@ async def is_likely_hallucination(
     return is_h, score
 
 
-async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tuple[Any, Any]]]:
+async def initialize_rag() -> tuple["LightRAGEngine", GTEEmbedding, BM25Okapi, list[tuple[Any, Any]]]:
     """
     Инициализирует объект LightRAG.
 
@@ -503,7 +621,7 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
     """
     try:
         logger.info("Initializing RAG system...")
-        embedder_path = str(LOCAL_EMBEDDER_PATH) if LOCAL_EMBEDDER_PATH else "Alibaba-NLP/gte-multilingual-base"
+        embedder_path = MULTILINGUAL_EMBEDDER_PATH
         logger.info(f"Loading tokenizer and embedder model: {embedder_path}...")
         emb_tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
             embedder_path,
@@ -517,23 +635,13 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         emb_model.eval()
         logger.info(f"Model {embedder_path} loaded successfully")
 
-        reranker_path = str(
-            LOCAL_RERANKER_PATH) if LOCAL_RERANKER_PATH else "Alibaba-NLP/gte-multilingual-reranker-base"
+        reranker_path = RERANKER_PATH
         logger.info(f"Loading tokenizer and reranker model: {reranker_path}...")
-        reranker_tokenizer = AutoTokenizer.from_pretrained(
-            reranker_path
-        )
-        reranker_model = AutoModelForSequenceClassification.from_pretrained(
-            reranker_path,
-            trust_remote_code=True,
-            device_map='cpu',
-        )
-        reranker_model.eval()
+        reranker_backend = load_cached_qwen_reranker_backend(reranker_path)
         logger.info(f"Reranker {reranker_path} loaded successfully")
 
-        global _reranker_tokenizer, _reranker_model
-        _reranker_tokenizer = reranker_tokenizer
-        _reranker_model = reranker_model
+        global _reranker_backend
+        _reranker_backend = reranker_backend
 
         logger.info("Initializing shared data and pipeline status...")
         initialize_share_data()
@@ -553,17 +661,6 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
         except Exception:
             pass
 
-        if settings.rag_engine_type == "zvec":
-            from meno_core.core.zvec_rag import ZvecRAGEngine
-            logger.info("Using ZVEC engine.")
-            engine: Union["ZvecRAGEngine", "LightRAGEngine"] = ZvecRAGEngine(
-                working_dir=str(WORKING_DIR),
-                embedder=embedder,
-                bm25=bm25,
-                chunk_db=chunk_db
-            )
-            return engine, embedder, bm25, chunk_db
-
         logger.info("Creating LightRAG instance...")
         rag: LightRAG = LightRAG(
             working_dir=str(WORKING_DIR),
@@ -575,15 +672,15 @@ async def initialize_rag() -> tuple[LightRAG, GTEEmbedding, BM25Okapi, list[tupl
             llm_model_func=llm_model_func,
             cosine_better_than_threshold=0.05,
             embedding_func=EmbeddingFunc(
-                embedding_dim=LOCAL_EMBEDDER_DIMENSION,
-                max_token_size=LOCAL_EMBEDDER_MAX_TOKENS,
+                embedding_dim=MULTILINGUAL_EMBEDDER_DIMENSION,
+                max_token_size=MULTILINGUAL_EMBEDDER_MAX_TOKENS,
                 func=lambda texts: gte_hf_embed(
                     texts,
                     tokenizer=emb_tokenizer,
                     embed_model=emb_model
                 )
             ),
-            rerank_model_func=partial(gte_hf_rerank, tokenizer=reranker_tokenizer, reranker=reranker_model),
+            rerank_model_func=partial(qwen_hf_rerank, reranker_backend=reranker_backend),
             addon_params={'language': 'Russian'}
         )
         logger.info("Initializing RAG storages...")
@@ -639,13 +736,7 @@ _snow = SnowballStemmer(language='russian')
 
 
 async def tokenize_and_normalize(text: str) -> str:
-    words = []
-    for w in wordpunct_tokenize(text):
-        if w.isalnum():
-            stem = _snow.stem(w.lower()).strip()
-            if stem:
-                words.append(stem)
-    return ' '.join(words)
+    return normalize_for_bm25(text)
 
 
 async def build_chunks_db_and_bm25(working_dir: Union[str, Path]):
@@ -665,6 +756,6 @@ async def build_chunks_db_and_bm25(working_dir: Union[str, Path]):
         raw = json.load(fp)
     # [(content, full_doc_id)]
     chunk_db = [(raw[k]["content"], raw[k]["full_doc_id"]) for k in raw]
-    norm_texts = [await tokenize_and_normalize(c[0]) for c in chunk_db]
+    norm_texts = [tokenize_for_bm25(content) for content, _doc_id in chunk_db]
     bm25 = BM25Okapi(norm_texts)
     return chunk_db, bm25

@@ -14,6 +14,8 @@ class RagRequest(BaseModel):
     session_id: Optional[str] = None
     request_id: Optional[str] = None
     language: Optional[str] = None
+    model: Optional[str] = None
+    base_url: Optional[str] = None
 
 
 class RagSource(BaseModel):
@@ -62,7 +64,7 @@ class Chunk(BaseModel):
 class RetrievedChunk(BaseModel):
     chunk: Chunk
     score: float
-    source: Literal["dense", "lexical", "hybrid"] = "hybrid"
+    source: Literal["multilingual_dense", "russian_dense", "lexical", "hybrid"] = "hybrid"
 
 
 class QueryRepresentations(BaseModel):
