@@ -17,11 +17,14 @@ from typing import List, Dict, Optional, Union, AsyncIterator, Any
 from typing import Literal, Tuple
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from meno_core.api.pipeline_stages import (
+    StageName, PipelineTimer, StageTracker, ThinkingTokenSplitter,
+)
 from meno_core.config.settings import settings
 from meno_core.core.lightrag_engine import LightRAGEngine
 from meno_core.core.link_correcter import LinkCorrecter
@@ -380,7 +383,7 @@ async def _resolve_requested_model(requested_model: Optional[str]) -> tuple[str,
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: OAIChatCompletionsRequest):
+async def chat_completions(request_body: OAIChatCompletionsRequest, request: Request):
     if rag_backend_registry is None:
         raise RuntimeError("RAG is not initialized.")
     created_ts: int = int(time.time())
@@ -390,10 +393,11 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     selected_knowledge_base_id = "unknown"
     selected_rag_engine_id = "unknown"
     route_reason = "unknown"
-    model_id, explicit_base_url, model_error = await _resolve_requested_model(request.model)
+    emit_stages: bool = request.headers.get("x-pipeline-stages", "").lower() == "true"
+    model_id, explicit_base_url, model_error = await _resolve_requested_model(request_body.model)
     if model_error is not None:
         return model_error
-    session_id: str = request.user or f"session-{completion_id}"
+    session_id: str = request_body.user or f"session-{completion_id}"
 
     if collector is not None:
         try:
@@ -402,7 +406,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
             _disable_collector(creating_message_error)
 
     prompt_started_at = time.perf_counter()
-    formatted_system_prompt, query, history = await _build_prompt_and_history(request.messages)
+    formatted_system_prompt, query, history = await _build_prompt_and_history(request_body.messages)
     request_timings_ms["prompt_build"] = round((time.perf_counter() - prompt_started_at) * 1000, 2)
 
     if collector is not None:
@@ -411,133 +415,131 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         except Exception as adding_question_error:
             _disable_collector(adding_question_error)
 
-    expand_started_at = time.perf_counter()
-    try:
-        expanded_query: str = await explain_abbreviations(query, abbreviations, override_model=model_id, override_base_url=explicit_base_url)
+    # --- Helper: run preprocessing with stage tracking ---
+    async def _run_preprocessing(timer: PipelineTimer) -> tuple[str, str]:
+        async with StageTracker(StageName.ABBREVIATION_EXPANSION, logger) as tracker:
+            try:
+                expanded = await explain_abbreviations(query, abbreviations, override_model=model_id, override_base_url=explicit_base_url)
+                tracker.detail = {"original": query, "expanded": expanded}
+            except Exception as explain_error:
+                logger.exception("Abbreviation explanation failed", exc_info=explain_error)
+                expanded = query
+                tracker.detail = {"original": query, "expanded": query, "fallback": True}
+        timer.record(tracker)
+        request_timings_ms["expand"] = tracker.duration_ms
 
-    except Exception as explain_error:
-        logger.exception("Abbreviation explanation failed", exc_info=explain_error)
-        expanded_query = query
-    request_timings_ms["expand"] = round((time.perf_counter() - expand_started_at) * 1000, 2)
-
-    resolve_started_at = time.perf_counter()
-    try:
-        resolved_query: str = await resolve_anaphora(expanded_query, history, override_model=model_id, override_base_url=explicit_base_url)
-    except Exception as resolve_error:
-        logger.exception("Anaphora resolution failed", exc_info=resolve_error)
-        resolved_query = expanded_query
-    request_timings_ms["resolve"] = round((time.perf_counter() - resolve_started_at) * 1000, 2)
-    request_timings_ms["request_prepare"] = round(
-        request_timings_ms["prompt_build"] + request_timings_ms["expand"] + request_timings_ms["resolve"],
-        2,
-    )
-
-    if collector is not None:
-        try:
-            collector.add_expanded_question(session_id=session_id, text=expanded_query)
-            collector.add_resolved_question(session_id=session_id, text=resolved_query)
-        except Exception as collector_update_error:
-            _disable_collector(collector_update_error)
-
-    if collector is not None:
-        try:
-            collector.update_time(session_id=session_id)
-        except Exception as collector_time_error:
-            _disable_collector(collector_time_error)
-
-    extra_payload = request.model_extra or {}
-    requested_kb = request.knowledge_base_id or request.knowledge_base or extra_payload.get("kb_id")
-    requested_engine = (
-        request.rag_engine_id
-        or request.rag_engine
-        or extra_payload.get("engine_id")
-        or extra_payload.get("rag_engine")
-    )
-    dispatch_started_at = time.perf_counter()
-    try:
-        backend_entry, route_reason = rag_backend_registry.resolve(requested_kb, requested_engine)
-    except RagSelectionError as selection_error:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": {
-                    "message": str(selection_error),
-                    "type": "invalid_request_error",
-                    "param": "knowledge_base_id/rag_engine_id",
-                }
-            },
+        async with StageTracker(StageName.ANAPHORA_RESOLUTION, logger) as tracker:
+            try:
+                resolved = await resolve_anaphora(expanded, history, override_model=model_id, override_base_url=explicit_base_url)
+                tracker.detail = {"resolved_query": resolved}
+            except Exception as resolve_error:
+                logger.exception("Anaphora resolution failed", exc_info=resolve_error)
+                resolved = expanded
+                tracker.detail = {"resolved_query": expanded, "fallback": True}
+        timer.record(tracker)
+        request_timings_ms["resolve"] = tracker.duration_ms
+        request_timings_ms["request_prepare"] = round(
+            request_timings_ms["prompt_build"] + request_timings_ms["expand"] + request_timings_ms["resolve"],
+            2,
         )
-    request_timings_ms["dispatch"] = round((time.perf_counter() - dispatch_started_at) * 1000, 2)
-    selected_knowledge_base_id = backend_entry.knowledge_base_id
-    selected_rag_engine_id = backend_entry.rag_engine_id
-    logger.info(
-        "Routing request_id=%s session_id=%s knowledge_base_id=%s rag_engine_id=%s (%s).",
-        completion_id,
-        session_id,
-        selected_knowledge_base_id,
-        selected_rag_engine_id,
-        route_reason,
-    )
 
-    backend_request = RagChatRequest(
-        question=resolved_query,
-        history=history,
-        system_prompt=formatted_system_prompt,
-        stream=request.stream,
-        session_id=session_id,
-        request_id=completion_id,
-        model=model_id,
-        knowledge_base_id=selected_knowledge_base_id,
-        rag_engine_id=selected_rag_engine_id,
-        route_reason=route_reason,
-        base_url=explicit_base_url,
-    )
+        if collector is not None:
+            try:
+                collector.add_expanded_question(session_id=session_id, text=expanded)
+                collector.add_resolved_question(session_id=session_id, text=resolved)
+            except Exception as collector_update_error:
+                _disable_collector(collector_update_error)
 
-    async def run_rag_backend_non_stream():
+        if collector is not None:
+            try:
+                collector.update_time(session_id=session_id)
+            except Exception as collector_time_error:
+                _disable_collector(collector_time_error)
+
+        return expanded, resolved
+
+    # --- Helper: resolve RAG backend ---
+    def _resolve_backend():
+        extra_payload = request_body.model_extra or {}
+        requested_kb = request_body.knowledge_base_id or request_body.knowledge_base or extra_payload.get("kb_id")
+        requested_engine = (
+            request_body.rag_engine_id
+            or request_body.rag_engine
+            or extra_payload.get("engine_id")
+            or extra_payload.get("rag_engine")
+        )
+        return rag_backend_registry.resolve(requested_kb, requested_engine)
+
+    # --- Non-streaming path ---
+    if not request_body.stream:
+        timer = PipelineTimer()
+
         try:
-            with llm_request_scope(model_id, explicit_base_url):
-                return await backend_entry.backend.answer(
-                    backend_request,
-                    timings_sink=request_timings_ms,
+            _expanded_query, resolved_query = await _run_preprocessing(timer)
+
+            dispatch_started_at = time.perf_counter()
+            try:
+                backend_entry, route_reason = _resolve_backend()
+            except RagSelectionError as selection_error:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": {
+                            "message": str(selection_error),
+                            "type": "invalid_request_error",
+                            "param": "knowledge_base_id/rag_engine_id",
+                        }
+                    },
                 )
-        except Exception as e:
-            logger.error(f"Error querying RAG backend: {e}", exc_info=True)
-            raise
+            request_timings_ms["dispatch"] = round((time.perf_counter() - dispatch_started_at) * 1000, 2)
+            selected_knowledge_base_id = backend_entry.knowledge_base_id
+            selected_rag_engine_id = backend_entry.rag_engine_id
+            logger.info(
+                "Routing request_id=%s session_id=%s knowledge_base_id=%s rag_engine_id=%s (%s).",
+                completion_id, session_id, selected_knowledge_base_id, selected_rag_engine_id, route_reason,
+            )
 
-    if not request.stream:
-        try:
-            response = await run_rag_backend_non_stream()  # type: ignore[misc]
-            if hasattr(response, "__aiter__"):
-                chunks = []
-                async for part in response:
-                    if part:
-                        chunks.append(str(part))
-                response = "".join(chunks)
-            content = str(response)
-            # prompt_for_first_answer = await rag_instance.aquery(
-            #     resolved_query,
-            #     param=QueryParam(
-            #         mode=QUERY_MODE,
-            #         conversation_history=history,
-            #         enable_rerank=True,
-            #         only_need_prompt=True
-            #     ),
-            # )
-            # try:
-            #     is_hallucination, relevance_score = await is_likely_hallucination(
-            #         original_prompt=prompt_for_first_answer,
-            #         llm_answer=content,
-            #     )
-            #     logger.info(
-            #         "Hallucination result: is_hallucination=%s, score=%.4f",
-            #         is_hallucination,
-            #         relevance_score,
-            #     )
-            #     if is_hallucination:
-            #         content = "Спасибо за сложный вопрос! Кажется, я не очень уверен в ответе, поэтому заранее приношу извинения за неточности и возможные ошибки!\n\n" + content
-            # except Exception:
-            #     logger.exception("Hallucination scoring failed")
-            #     pass
+            backend_request = RagChatRequest(
+                question=resolved_query,
+                history=history,
+                system_prompt=formatted_system_prompt,
+                stream=False,
+                session_id=session_id,
+                request_id=completion_id,
+                model=model_id,
+                knowledge_base_id=selected_knowledge_base_id,
+                rag_engine_id=selected_rag_engine_id,
+                route_reason=route_reason,
+                base_url=explicit_base_url,
+            )
+
+            async with StageTracker(StageName.RETRIEVAL_AND_GENERATION, logger) as rag_tracker:
+                with llm_request_scope(model_id, explicit_base_url):
+                    response = await backend_entry.backend.answer(
+                        backend_request,
+                        timings_sink=request_timings_ms,
+                    )
+                if hasattr(response, "__aiter__"):
+                    chunks = []
+                    async for part in response:
+                        if part:
+                            chunks.append(str(part))
+                    response = "".join(chunks)
+                content = str(response)
+            timer.record(rag_tracker)
+
+            # Link addition
+            if settings.enable_links_addition and ref_searcher is not None:
+                async with StageTracker(StageName.LINK_ADDITION, logger) as link_tracker:
+                    links = await ref_searcher.get_links_from_answer(content)
+                    link_tracker.detail = {"links_found": len(links)}
+                timer.record(link_tracker)
+
+            # Link correction
+            if settings.enable_links_correction and ref_corrector is not None:
+                async with StageTracker(StageName.LINK_CORRECTION, logger) as corr_tracker:
+                    content = await ref_corrector.replace_markdown_links(content)
+                timer.record(corr_tracker)
 
             if collector is not None:
                 try:
@@ -545,6 +547,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 except Exception as collector_answer_error:
                     _disable_collector(collector_answer_error)
 
+            summary = timer.summary()
             _log_request_summary(
                 request_id=completion_id,
                 session_id=session_id,
@@ -555,7 +558,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 started_at=request_started_at,
                 stage_ms=request_timings_ms,
                 response_len=len(content),
-                stream=request.stream,
+                stream=False,
             )
 
         except Exception as non_stream_error:
@@ -570,7 +573,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 }
             )
 
-        return {
+        resp: dict[str, Any] = {
             "id": completion_id,
             "object": "chat.completion",
             "created": created_ts,
@@ -584,9 +587,17 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 }
             ],
         }
+        if emit_stages:
+            summary = timer.summary()
+            resp["_pipeline_stages"] = {"total_ms": summary.total_ms, "stages": summary.stages}
+        return resp
 
+    # --- Streaming path ---
     async def sse_generator():
-        def chunk(delta: dict, finish_reason=None):
+        nonlocal selected_knowledge_base_id, selected_rag_engine_id, route_reason
+        timer = PipelineTimer()
+
+        def mk_chunk(delta: dict, finish_reason=None):
             return {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -602,12 +613,94 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 ],
             }
 
-        first = chunk({"role": "assistant"})
-        yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
-
-        accumulated: list[str] = []
+        def stage_sse(tracker: StageTracker, which: str) -> str:
+            evt = tracker.start_event if which == "start" else tracker.end_event
+            return evt.to_sse() if evt else ""
 
         try:
+            # --- Preprocessing stages (inside generator for real-time SSE) ---
+            abbr_tracker = StageTracker(StageName.ABBREVIATION_EXPANSION, logger)
+            async with abbr_tracker:
+                try:
+                    expanded_query = await explain_abbreviations(query, abbreviations, override_model=model_id, override_base_url=explicit_base_url)
+                    abbr_tracker.detail = {"original": query, "expanded": expanded_query}
+                except Exception:
+                    logger.exception("Abbreviation explanation failed")
+                    expanded_query = query
+                    abbr_tracker.detail = {"original": query, "expanded": query, "fallback": True}
+            timer.record(abbr_tracker)
+            request_timings_ms["expand"] = abbr_tracker.duration_ms
+            if emit_stages:
+                yield stage_sse(abbr_tracker, "start")
+                yield stage_sse(abbr_tracker, "end")
+
+            ana_tracker = StageTracker(StageName.ANAPHORA_RESOLUTION, logger)
+            async with ana_tracker:
+                try:
+                    resolved_query = await resolve_anaphora(expanded_query, history, override_model=model_id, override_base_url=explicit_base_url)
+                    ana_tracker.detail = {"resolved_query": resolved_query}
+                except Exception:
+                    logger.exception("Anaphora resolution failed")
+                    resolved_query = expanded_query
+                    ana_tracker.detail = {"resolved_query": expanded_query, "fallback": True}
+            timer.record(ana_tracker)
+            request_timings_ms["resolve"] = ana_tracker.duration_ms
+            request_timings_ms["request_prepare"] = round(
+                request_timings_ms["prompt_build"] + request_timings_ms["expand"] + request_timings_ms["resolve"],
+                2,
+            )
+            if emit_stages:
+                yield stage_sse(ana_tracker, "start")
+                yield stage_sse(ana_tracker, "end")
+
+            if collector is not None:
+                try:
+                    collector.add_expanded_question(session_id=session_id, text=expanded_query)
+                    collector.add_resolved_question(session_id=session_id, text=resolved_query)
+                except Exception:
+                    logger.exception("Failed to add expanded/resolved question")
+            if collector is not None:
+                try:
+                    collector.update_time(session_id=session_id)
+                except Exception:
+                    logger.exception("Failed to update time")
+
+            # --- Backend dispatch ---
+            dispatch_started_at = time.perf_counter()
+            backend_entry, route_reason = _resolve_backend()
+            request_timings_ms["dispatch"] = round((time.perf_counter() - dispatch_started_at) * 1000, 2)
+            selected_knowledge_base_id = backend_entry.knowledge_base_id
+            selected_rag_engine_id = backend_entry.rag_engine_id
+            logger.info(
+                "Routing request_id=%s session_id=%s knowledge_base_id=%s rag_engine_id=%s (%s).",
+                completion_id, session_id, selected_knowledge_base_id, selected_rag_engine_id, route_reason,
+            )
+
+            backend_request = RagChatRequest(
+                question=resolved_query,
+                history=history,
+                system_prompt=formatted_system_prompt,
+                stream=True,
+                session_id=session_id,
+                request_id=completion_id,
+                model=model_id,
+                knowledge_base_id=selected_knowledge_base_id,
+                rag_engine_id=selected_rag_engine_id,
+                route_reason=route_reason,
+                base_url=explicit_base_url,
+            )
+
+            # --- RAG query stage ---
+            rag_tracker = StageTracker(StageName.RETRIEVAL_AND_GENERATION, logger)
+            await rag_tracker.__aenter__()
+            if emit_stages:
+                yield stage_sse(rag_tracker, "start")
+
+            # Role chunk
+            first = mk_chunk({"role": "assistant"})
+            yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
+
+            accumulated: list[str] = []
             with llm_request_scope(model_id, explicit_base_url):
                 result: str | AsyncIterator[str] = await backend_entry.backend.answer(
                     backend_request,
@@ -625,15 +718,69 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                         for i in range(0, len(text), step):
                             yield text[i:i + step]
 
+                splitter = ThinkingTokenSplitter()
                 async for piece in iter_pieces():
-                    accumulated.append(piece)
-                    data: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({"content": piece})
-                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    for segment_text, is_thinking in splitter.feed(piece):
+                        if is_thinking:
+                            if emit_stages:
+                                yield f"event: thinking\ndata: {json.dumps({'id': completion_id, 'content': segment_text}, ensure_ascii=False)}\n\n"
+                        else:
+                            accumulated.append(segment_text)
+                            data = mk_chunk({"content": segment_text})
+                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-            done: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({}, finish_reason="stop")
-            yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+                # Flush remaining buffer
+                for segment_text, is_thinking in splitter.flush():
+                    if is_thinking:
+                        if emit_stages:
+                            yield f"event: thinking\ndata: {json.dumps({'id': completion_id, 'content': segment_text}, ensure_ascii=False)}\n\n"
+                    else:
+                        accumulated.append(segment_text)
+                        data = mk_chunk({"content": segment_text})
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+            await rag_tracker.__aexit__(None, None, None)
+            timer.record(rag_tracker)
+            if emit_stages:
+                yield stage_sse(rag_tracker, "end")
+
             full_answer = "".join(accumulated)
+
+            # --- Link addition stage ---
+            if settings.enable_links_addition and ref_searcher is not None:
+                link_tracker = StageTracker(StageName.LINK_ADDITION, logger)
+                async with link_tracker:
+                    links = await ref_searcher.get_links_from_answer(full_answer)
+                    link_tracker.detail = {"links_found": len(links)}
+                timer.record(link_tracker)
+                if emit_stages:
+                    yield stage_sse(link_tracker, "start")
+                    yield stage_sse(link_tracker, "end")
+
+            # --- Link correction stage ---
+            if settings.enable_links_correction and ref_corrector is not None:
+                corr_tracker = StageTracker(StageName.LINK_CORRECTION, logger)
+                async with corr_tracker:
+                    corrected = await ref_corrector.replace_markdown_links(full_answer)
+                    if corrected != full_answer:
+                        corr_tracker.detail = {"corrected": True}
+                timer.record(corr_tracker)
+                if emit_stages:
+                    yield stage_sse(corr_tracker, "start")
+                    yield stage_sse(corr_tracker, "end")
+
+            # Done chunk
+            done = mk_chunk({}, finish_reason="stop")
+            yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
+
+            # Summary
+            summary = timer.summary()
+            logger.info("Pipeline latency: total=%.1fms stages=%s", summary.total_ms, summary.stages)
+            if emit_stages:
+                yield summary.to_sse()
+
+            yield "data: [DONE]\n\n"
+
             if collector is not None:
                 try:
                     collector.add_model_answer(session_id=session_id, text=full_answer)
@@ -650,7 +797,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 started_at=request_started_at,
                 stage_ms=request_timings_ms,
                 response_len=len(full_answer),
-                stream=request.stream,
+                stream=True,
             )
 
         except Exception as stream_error:
