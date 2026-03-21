@@ -13,15 +13,22 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from logging import Logger
 from pathlib import Path
-from typing import List, Dict, Optional, Union, AsyncIterator, Any
+from typing import List, Dict, Optional, Union, AsyncIterator
 from typing import Literal, Tuple
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
-from fastapi import FastAPI
+from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from meno_core.api.pipeline_stages import (
+    PipelineTimer,
+    StageName,
+    StageEvent,
+    StageStatus,
+    ThinkingTokenSplitter,
+)
 from meno_core.config.settings import settings
 from meno_core.core.lightrag_engine import LightRAGEngine
 from meno_core.core.link_correcter import LinkCorrecter
@@ -380,7 +387,7 @@ async def _resolve_requested_model(requested_model: Optional[str]) -> tuple[str,
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: OAIChatCompletionsRequest):
+async def chat_completions(request: OAIChatCompletionsRequest, raw_request: FastAPIRequest):
     if rag_backend_registry is None:
         raise RuntimeError("RAG is not initialized.")
     created_ts: int = int(time.time())
@@ -390,6 +397,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
     selected_knowledge_base_id = "unknown"
     selected_rag_engine_id = "unknown"
     route_reason = "unknown"
+    emit_stages: bool = raw_request.headers.get("x-pipeline-stages", "").lower() == "true"
     model_id, explicit_base_url, model_error = await _resolve_requested_model(request.model)
     if model_error is not None:
         return model_error
@@ -586,7 +594,9 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         }
 
     async def sse_generator():
-        def chunk(delta: dict, finish_reason=None):
+        timer = PipelineTimer()
+
+        def mk_chunk(delta: dict, finish_reason=None):
             return {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
@@ -602,25 +612,38 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 ],
             }
 
-        first = chunk({"role": "assistant"})
-        yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
+        def emit_stage(stage_name: str, status: str, duration_ms: float | None = None, detail: dict | None = None) -> str:
+            evt = StageEvent(
+                stage=stage_name,
+                status=status,
+                duration_ms=duration_ms,
+                detail=detail,
+            )
+            return evt.to_sse()
 
-        # --- Emit pre-pipeline <stage> events for stages already completed ---
-        from meno_core.core.rag.stage_event import stage_event as _stage_event, strip_stage_tags as _strip_stage_tags
-        for _stage_name, _stage_key, _stage_summary in (
-            ("expand_abbreviations", "expand", "Аббревиатуры раскрыты"),
-            ("resolve_anaphora", "resolve", "Кореференции разрешены"),
-        ):
-            _ms = request_timings_ms.get(_stage_key)
-            if _ms is not None:
-                _tag = _stage_event(_stage_name, _ms, _stage_summary)
-                yield f"data: {json.dumps(chunk({'content': _tag}), ensure_ascii=False)}\n\n"
+        # Emit pre-pipeline stage events (already computed above)
+        if emit_stages:
+            expand_ms = request_timings_ms.get("expand")
+            if expand_ms is not None:
+                timer.stages[StageName.ABBREVIATION_EXPANSION.value] = expand_ms
+                yield emit_stage(StageName.ABBREVIATION_EXPANSION.value, StageStatus.STARTED.value)
+                yield emit_stage(StageName.ABBREVIATION_EXPANSION.value, StageStatus.COMPLETED.value, duration_ms=expand_ms)
+
+            resolve_ms = request_timings_ms.get("resolve")
+            if resolve_ms is not None:
+                timer.stages[StageName.ANAPHORA_RESOLUTION.value] = resolve_ms
+                yield emit_stage(StageName.ANAPHORA_RESOLUTION.value, StageStatus.STARTED.value)
+                yield emit_stage(StageName.ANAPHORA_RESOLUTION.value, StageStatus.COMPLETED.value, duration_ms=resolve_ms)
+
+        # Role chunk
+        first = mk_chunk({"role": "assistant"})
+        yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
 
         accumulated: list[str] = []
 
         try:
             with llm_request_scope(model_id, explicit_base_url):
-                result: str | AsyncIterator[str] = await backend_entry.backend.answer(
+                result: str | AsyncIterator[str | dict] = await backend_entry.backend.answer(
                     backend_request,
                     timings_sink=request_timings_ms,
                 )
@@ -628,27 +651,71 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 async def iter_pieces():
                     if hasattr(result, "__aiter__"):
                         async for part in result:
-                            if part:
-                                yield str(part)
+                            if part is not None:
+                                yield part
                     else:
                         text: str = str(result)
                         step: int = 512
                         for i in range(0, len(text), step):
                             yield text[i:i + step]
 
-                async for piece in iter_pieces():
-                    accumulated.append(piece)
-                    data: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({"content": piece})
-                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                splitter = ThinkingTokenSplitter()
 
-            done: dict[str, str | int | list[dict[str, int | dict | None | Any]]] = chunk({}, finish_reason="stop")
+                async for piece in iter_pieces():
+                    # Stage event dicts from orchestrator.answer_stream()
+                    if isinstance(piece, dict) and "_stage" in piece:
+                        if emit_stages:
+                            stage_name = piece["_stage"]
+                            status = piece.get("status", StageStatus.COMPLETED.value)
+                            duration_ms = piece.get("duration_ms")
+                            detail = piece.get("detail")
+                            if duration_ms is not None:
+                                timer.stages[stage_name] = duration_ms
+                            yield emit_stage(stage_name, status, duration_ms=duration_ms, detail=detail)
+                        continue
+
+                    # Text content (LLM tokens)
+                    text_piece = str(piece)
+                    if not text_piece:
+                        continue
+
+                    if emit_stages:
+                        for segment_text, is_thinking in splitter.feed(text_piece):
+                            if is_thinking:
+                                yield f"event: thinking\ndata: {json.dumps({'id': completion_id, 'content': segment_text}, ensure_ascii=False)}\n\n"
+                            else:
+                                accumulated.append(segment_text)
+                                data = mk_chunk({"content": segment_text})
+                                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    else:
+                        accumulated.append(text_piece)
+                        data = mk_chunk({"content": text_piece})
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+                # Flush remaining buffer from ThinkingTokenSplitter
+                if emit_stages:
+                    for segment_text, is_thinking in splitter.flush():
+                        if is_thinking:
+                            yield f"event: thinking\ndata: {json.dumps({'id': completion_id, 'content': segment_text}, ensure_ascii=False)}\n\n"
+                        else:
+                            accumulated.append(segment_text)
+                            data = mk_chunk({"content": segment_text})
+                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+            done = mk_chunk({}, finish_reason="stop")
             yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
+
+            # Emit pipeline summary
+            if emit_stages:
+                summary = timer.summary()
+                logger.info("Pipeline latency: total=%.1fms stages=%s", summary.total_ms, summary.stages)
+                yield summary.to_sse()
+
             yield "data: [DONE]\n\n"
             full_answer = "".join(accumulated)
-            clean_answer = _strip_stage_tags(full_answer)
             if collector is not None:
                 try:
-                    collector.add_model_answer(session_id=session_id, text=clean_answer)
+                    collector.add_model_answer(session_id=session_id, text=full_answer)
                 except Exception as collector_error:
                     _disable_collector(collector_error)
 
@@ -661,8 +728,8 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 route_reason=route_reason,
                 started_at=request_started_at,
                 stage_ms=request_timings_ms,
-                response_len=len(clean_answer),
-                stream=request.stream,
+                response_len=len(full_answer),
+                stream=True,
             )
 
         except Exception as stream_error:

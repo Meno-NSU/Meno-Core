@@ -4,7 +4,6 @@ from collections.abc import AsyncIterator
 from typing import Any, Dict, List
 
 from meno_core.core.lightrag_timing import get_current_rag_trace
-from meno_core.core.rag.stage_event import stage_event, stage_started
 from meno_core.core.rag.config import ChunkRagConfig
 from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.fusion.merger import HybridFusion
@@ -322,11 +321,11 @@ class ChunkRagOrchestrator:
                 insufficient_information=True,
             )
 
-    async def answer_stream(self, request: RagRequest) -> AsyncIterator[str]:
+    async def answer_stream(self, request: RagRequest) -> AsyncIterator[str | dict]:
         """Streaming variant of :meth:`answer`.
 
-        Yields ``<stage>`` event tags after each pipeline step completes, then
-        streams the LLM answer tokens (which may include ``<think>`` blocks).
+        Yields dicts for stage events and strings for LLM answer tokens.
+        Stage event dicts have: {"_stage": name, "status": ..., "duration_ms": ..., "detail": ...}
         """
         start_time = time.time()
         request_id = request.request_id or "-"
@@ -354,15 +353,20 @@ class ChunkRagOrchestrator:
                 trace.record_stage("query_rewrite", rewrite_ms, meta={"search_queries": len(representations.search_queries)})
 
             if not representations.is_meaningful:
-                yield stage_event("query_rewrite", rewrite_ms, "Запрос не содержит конкретного вопроса")
+                yield {
+                    "_stage": "query_rewrite", "status": "completed", "duration_ms": rewrite_ms,
+                    "detail": {"summary": "Query not meaningful"},
+                }
                 yield "Похоже, что ваш запрос не содержит конкретного вопроса или не относится к НГУ. Пожалуйста, уточните ваш запрос."
                 return
 
-            yield stage_event(
-                "query_rewrite", rewrite_ms,
-                f"Перефразировано в {len(representations.search_queries)} поисковых запросов"
-                + (", HyDE включён" if representations.hypothetical_document else ""),
-            )
+            yield {
+                "_stage": "query_rewrite", "status": "completed", "duration_ms": rewrite_ms,
+                "detail": {
+                    "search_queries": len(representations.search_queries),
+                    "hyde_enabled": bool(representations.hypothetical_document),
+                },
+            }
 
             # --- retrieval ---
             step_start = time.time()
@@ -396,13 +400,15 @@ class ChunkRagOrchestrator:
                 trace.record_stage("vector_retrieval", retrieval_ms, meta={"retrieved_counts": pooled_counts})
 
             total_retrieved = sum(pooled_counts.values())
-            yield stage_event(
-                "retrieval", retrieval_ms,
-                f"Найдено {total_retrieved} чанков"
-                f" (multilingual: {pooled_counts.get('multilingual_dense', 0)},"
-                f" russian: {pooled_counts.get('russian_dense', 0)},"
-                f" BM25: {pooled_counts.get('lexical', 0)})",
-            )
+            yield {
+                "_stage": "retrieval", "status": "completed", "duration_ms": retrieval_ms,
+                "detail": {
+                    "chunks_found": total_retrieved,
+                    "multilingual": pooled_counts.get("multilingual_dense", 0),
+                    "russian": pooled_counts.get("russian_dense", 0),
+                    "bm25": pooled_counts.get("lexical", 0),
+                },
+            }
 
             # --- fusion ---
             step_start = time.time()
@@ -411,7 +417,10 @@ class ChunkRagOrchestrator:
             if trace is not None:
                 trace.record_stage("fusion", fusion_ms, meta={"candidates": len(fusion_result.chunks)})
 
-            yield stage_event("fusion", fusion_ms, f"Объединено до {len(fusion_result.chunks)} кандидатов")
+            yield {
+                "_stage": "fusion", "status": "completed", "duration_ms": fusion_ms,
+                "detail": {"candidates": len(fusion_result.chunks)},
+            }
 
             # --- rerank ---
             step_start = time.time()
@@ -427,10 +436,13 @@ class ChunkRagOrchestrator:
                     "kept": len(rerank_result.reranked_chunks),
                 })
 
-            yield stage_event(
-                "rerank", rerank_ms,
-                f"Отранжировано {len(fusion_result.chunks)} → топ-{len(rerank_result.reranked_chunks)}",
-            )
+            yield {
+                "_stage": "rerank", "status": "completed", "duration_ms": rerank_ms,
+                "detail": {
+                    "candidates": len(fusion_result.chunks),
+                    "kept": len(rerank_result.reranked_chunks),
+                },
+            }
 
             # --- context assembly ---
             step_start = time.time()
@@ -440,13 +452,13 @@ class ChunkRagOrchestrator:
             if trace is not None:
                 trace.record_stage("context_build", context_ms, meta={"sources": len(sources), "context_tokens": context_tokens})
 
-            yield stage_event(
-                "context_assembly", context_ms,
-                f"Собран контекст из {len(sources)} источников (~{context_tokens} токенов)",
-            )
+            yield {
+                "_stage": "context_assembly", "status": "completed", "duration_ms": context_ms,
+                "detail": {"sources": len(sources), "context_tokens": context_tokens},
+            }
 
             # --- generation (streaming) ---
-            yield stage_started("generation", "Генерация ответа...")
+            yield {"_stage": "generation", "status": "started"}
 
             step_start = time.time()
             result_iter, _insuff = await self.generator.generate_answer(
@@ -460,12 +472,15 @@ class ChunkRagOrchestrator:
             )
 
             first_chunk = True
-            async for token in result_iter:  # type: ignore[union-attr]
-                if first_chunk:
-                    if trace is not None:
-                        trace.mark_llm_stream_first_chunk()
-                    first_chunk = False
-                yield token
+            if hasattr(result_iter, "__aiter__"):
+                async for token in result_iter:
+                    if first_chunk:
+                        if trace is not None:
+                            trace.mark_llm_stream_first_chunk()
+                        first_chunk = False
+                    yield str(token)
+            else:
+                yield str(result_iter)
 
             if trace is not None:
                 trace.mark_llm_stream_complete()
@@ -478,12 +493,11 @@ class ChunkRagOrchestrator:
             )
 
         except Exception as error:
-            logger.error("Error in chunk RAG streaming orchestrator: %s", error, exc_info=True)
+            logger.error("Error in chunk RAG orchestrator (stream): %s", error, exc_info=True)
             pipeline_logger.error(
-                "request-failed request_id=%s session_id=%s total_ms=%.2f stream=true error=%s",
+                "request-failed request_id=%s session_id=%s total_ms=%.2f error=%s stream=true",
                 request_id, session_id, (time.time() - start_time) * 1000, error,
             )
-            yield stage_event("error", 0, f"Ошибка пайплайна: {error}")
             yield "Произошла системная ошибка при обработке вашего запроса."
 
     @staticmethod

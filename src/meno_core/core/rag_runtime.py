@@ -210,7 +210,7 @@ class ChunkRagChatBackend:
         self,
         request: RagChatRequest,
         timings_sink: dict[str, float] | None = None,
-    ) -> str | AsyncIterator[str]:
+    ) -> str | AsyncIterator[str | dict]:
         from meno_core.core.lightrag_timing import reset_rag_request_trace, start_rag_request_trace
         from meno_core.core.rag.models import RagMessage, RagRequest
 
@@ -234,13 +234,11 @@ class ChunkRagChatBackend:
             base_url=request.base_url,
         )
 
-        if request.stream:
-            raw_stream = self.orchestrator.answer_stream(rag_request)
-
-            async def _wrapped_stream() -> AsyncIterator[str]:
+        if request.stream and hasattr(self.orchestrator, "answer_stream"):
+            async def _stream_wrapper() -> AsyncIterator[str | dict]:
                 try:
-                    async for part in raw_stream:
-                        yield part
+                    async for piece in self.orchestrator.answer_stream(rag_request):
+                        yield piece
                     trace.finalize(timings_sink=timings_sink)
                 except Exception as error:
                     trace.finalize(timings_sink=timings_sink, error=error)
@@ -248,7 +246,7 @@ class ChunkRagChatBackend:
                 finally:
                     reset_rag_request_trace(token)
 
-            return _wrapped_stream()
+            return _stream_wrapper()
 
         try:
             response = await self.orchestrator.answer(rag_request)
