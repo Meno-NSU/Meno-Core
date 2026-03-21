@@ -605,6 +605,17 @@ async def chat_completions(request: OAIChatCompletionsRequest):
         first = chunk({"role": "assistant"})
         yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
 
+        # --- Emit pre-pipeline <stage> events for stages already completed ---
+        from meno_core.core.rag.stage_event import stage_event as _stage_event, strip_stage_tags as _strip_stage_tags
+        for _stage_name, _stage_key, _stage_summary in (
+            ("expand_abbreviations", "expand", "Аббревиатуры раскрыты"),
+            ("resolve_anaphora", "resolve", "Кореференции разрешены"),
+        ):
+            _ms = request_timings_ms.get(_stage_key)
+            if _ms is not None:
+                _tag = _stage_event(_stage_name, _ms, _stage_summary)
+                yield f"data: {json.dumps(chunk({'content': _tag}), ensure_ascii=False)}\n\n"
+
         accumulated: list[str] = []
 
         try:
@@ -634,9 +645,10 @@ async def chat_completions(request: OAIChatCompletionsRequest):
             yield f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             full_answer = "".join(accumulated)
+            clean_answer = _strip_stage_tags(full_answer)
             if collector is not None:
                 try:
-                    collector.add_model_answer(session_id=session_id, text=full_answer)
+                    collector.add_model_answer(session_id=session_id, text=clean_answer)
                 except Exception as collector_error:
                     _disable_collector(collector_error)
 
@@ -649,7 +661,7 @@ async def chat_completions(request: OAIChatCompletionsRequest):
                 route_reason=route_reason,
                 started_at=request_started_at,
                 stage_ms=request_timings_ms,
-                response_len=len(full_answer),
+                response_len=len(clean_answer),
                 stream=request.stream,
             )
 

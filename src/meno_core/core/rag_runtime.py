@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -209,7 +210,7 @@ class ChunkRagChatBackend:
         self,
         request: RagChatRequest,
         timings_sink: dict[str, float] | None = None,
-    ) -> str:
+    ) -> str | AsyncIterator[str]:
         from meno_core.core.lightrag_timing import reset_rag_request_trace, start_rag_request_trace
         from meno_core.core.rag.models import RagMessage, RagRequest
 
@@ -222,16 +223,34 @@ class ChunkRagChatBackend:
             stream=request.stream,
             route_reason=request.route_reason,
         )
+
+        rag_request = RagRequest(
+            question=request.question,
+            history=[RagMessage(role=item["role"], text=item["content"]) for item in request.history],  # type: ignore[arg-type]
+            mode=request.rag_engine_id,
+            session_id=request.session_id,
+            request_id=request.request_id,
+            model=request.model,
+            base_url=request.base_url,
+        )
+
+        if request.stream:
+            raw_stream = self.orchestrator.answer_stream(rag_request)
+
+            async def _wrapped_stream() -> AsyncIterator[str]:
+                try:
+                    async for part in raw_stream:
+                        yield part
+                    trace.finalize(timings_sink=timings_sink)
+                except Exception as error:
+                    trace.finalize(timings_sink=timings_sink, error=error)
+                    raise
+                finally:
+                    reset_rag_request_trace(token)
+
+            return _wrapped_stream()
+
         try:
-            rag_request = RagRequest(
-                question=request.question,
-                history=[RagMessage(role=item["role"], text=item["content"]) for item in request.history],  # type: ignore[arg-type]
-                mode=request.rag_engine_id,
-                session_id=request.session_id,
-                request_id=request.request_id,
-                model=request.model,
-                base_url=request.base_url,
-            )
             response = await self.orchestrator.answer(rag_request)
             trace.finalize(timings_sink=timings_sink)
             return response.answer
