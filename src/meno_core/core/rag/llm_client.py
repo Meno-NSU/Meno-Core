@@ -14,6 +14,7 @@ async def call_llm(
     stream: bool = False,
     override_model: Optional[str] = None,
     override_base_url: Optional[str] = None,
+    preserve_thinking: bool = False,
     **kwargs: Any
 ) -> Union[str, AsyncIterator[str]]:
     """
@@ -29,6 +30,7 @@ async def call_llm(
             enable_cot=False,
             override_model=override_model,
             override_base_url=override_base_url,
+            preserve_thinking=preserve_thinking,
             **kwargs,
         )
     except Exception as e:

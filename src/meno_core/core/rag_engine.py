@@ -157,6 +157,11 @@ def llm_request_scope(
 
 
 def _strip_reasoning_prefix(text: str) -> str:
+    """Strip <think>…</think> reasoning blocks from a non-streaming result.
+
+    Used only for *internal* LLM calls (query rewriting, knowledge-graph
+    extraction, etc.) where the frontend never sees the output.
+    """
     thinking_end_position = text.find(THINK_END_TOKEN)
     if thinking_end_position >= 0:
         logger.debug(
@@ -172,45 +177,20 @@ async def _single_chunk_stream(text: str) -> AsyncIterator[str]:
         yield text
 
 
-async def _normalize_streaming_llm_result(result: Any) -> AsyncIterator[str]:
+async def _passthrough_streaming_llm_result(result: Any) -> AsyncIterator[str]:
+    """Pass LLM output through as-is, preserving <think>…</think> tags.
+
+    The frontend is responsible for parsing and rendering thinking blocks.
+    """
     if isinstance(result, str):
-        async for part in _single_chunk_stream(_strip_reasoning_prefix(result).strip()):
+        async for part in _single_chunk_stream(result.strip()):
             yield part
         return
 
-    buffer = ""
-    hiding_thinking: Optional[bool] = None
-
     async for part in result:
         text = "" if part is None else str(part)
-        if not text:
-            continue
-
-        if hiding_thinking is False:
+        if text:
             yield text
-            continue
-
-        buffer += text
-
-        if hiding_thinking is None:
-            if THINK_START_TOKEN.startswith(buffer):
-                continue
-            if not buffer.startswith(THINK_START_TOKEN):
-                hiding_thinking = False
-                yield buffer
-                buffer = ""
-                continue
-            hiding_thinking = True
-
-        if hiding_thinking and THINK_END_TOKEN in buffer:
-            _, remainder = buffer.split(THINK_END_TOKEN, 1)
-            if remainder:
-                yield remainder
-            buffer = ""
-            hiding_thinking = False
-
-    if buffer:
-        yield _strip_reasoning_prefix(buffer) if hiding_thinking else buffer
 
 
 async def call_openai_llm(
@@ -223,6 +203,7 @@ async def call_openai_llm(
     hashing_kv=None,
     override_model: Optional[str] = None,
     override_base_url: Optional[str] = None,
+    preserve_thinking: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
@@ -269,7 +250,7 @@ async def call_openai_llm(
             trace.mark_llm_stream_open()
 
     if stream:
-        return _normalize_streaming_llm_result(result)
+        return _passthrough_streaming_llm_result(result)
 
     if not isinstance(result, str):
         chunks: list[str] = []
@@ -278,6 +259,8 @@ async def call_openai_llm(
         result = "".join(chunks)
 
     logger.debug("Received raw LLM answer, length=%s", len(result))
+    if preserve_thinking:
+        return result.strip()
     return _strip_reasoning_prefix(result).strip()
 
 
