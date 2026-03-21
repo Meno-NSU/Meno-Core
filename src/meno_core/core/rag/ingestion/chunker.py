@@ -15,11 +15,11 @@ async def extract_document_title(chunks_text: List[str]) -> str:
     """
     if not chunks_text:
         return "Unknown Document"
-    
+
     # Take up to first 4 chunks
     sample_text = "\n\n---\n\n".join(chunks_text[:4])
     prompt = TITLE_EXTRACTION_PROMPT.format(chunks_text=sample_text)
-    
+
     try:
         title = await generate_with_llm(prompt=prompt)
         return title.strip().strip('"').strip("'")
@@ -42,16 +42,16 @@ async def build_chunk(
     Constructs a Chunk object, generating the dense and bm25 representations.
     """
     chunk_id = f"{document_id}_chunk_{chunk_index}"
-    
+
     # Enhance text for dense embedding with titles to improve retrieval context
     text_for_dense = f"Document: {document_title}\n"
     if section_title:
         text_for_dense += f"Section: {section_title}\n"
     text_for_dense += f"\n{text}"
-    
+
     # Stem normalization for BM25
     text_for_bm25 = normalize_for_bm25(text_for_dense)
-    
+
     metadata = ChunkMetadata(
         document_id=document_id,
         document_title=document_title,
@@ -61,7 +61,7 @@ async def build_chunk(
         chunk_index=chunk_index,
         extra=extra_metadata or {}
     )
-    
+
     return Chunk(
         chunk_id=chunk_id,
         text=text,

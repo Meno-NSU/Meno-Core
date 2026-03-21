@@ -7,7 +7,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from meno_core.core.rag.ingestion.corpus_builder import (
+from meno_core.core.rag.ingestion.corpus_builder import (  # noqa: E402
     NormalizedDocument,
     build_chunk_rag_corpus,
     count_tokens,

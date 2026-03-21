@@ -8,12 +8,12 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from meno_core.config.settings import settings
-from meno_core.core.rag.config import ChunkRagConfig
-from meno_core.core.rag.ingestion.indexer import Indexer
-from meno_core.core.rag.ingestion.source_loader import load_chunks_from_compiled_corpus, resolve_chunk_corpus_path
-from meno_core.core.rag.model_registry import load_chunk_rag_model_registry
-from meno_core.core.rag_engine import initialize_rag
+from meno_core.config.settings import settings  # noqa: E402
+from meno_core.core.rag.config import ChunkRagConfig  # noqa: E402
+from meno_core.core.rag.ingestion.indexer import Indexer  # noqa: E402
+from meno_core.core.rag.ingestion.source_loader import load_chunks_from_compiled_corpus, resolve_chunk_corpus_path  # noqa: E402
+from meno_core.core.rag.model_registry import load_chunk_rag_model_registry  # noqa: E402
+from meno_core.core.rag_engine import initialize_rag  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,10 @@ async def init_chunks_from_store():
 
     chunks = await load_chunks_from_compiled_corpus(source_path)
     logger.info(f"Loaded {len(chunks)} chunks from source.")
-    
+
     output_dir = settings.chunk_rag_data_path
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     indexer = Indexer(
         working_dir=output_dir,
         dense_embedders={
@@ -55,7 +55,7 @@ async def init_chunks_from_store():
         reranker_path=model_registry.reranker.model_path,
         config=config,
     )
-    
+
     # This will write zvec vector index, bm25.pkl and chunk metadata json
     await indexer.build_index(chunks=chunks, batch_size=32)
     logger.info(f"Successfully generated ZVec and BM25 indices at {output_dir}")

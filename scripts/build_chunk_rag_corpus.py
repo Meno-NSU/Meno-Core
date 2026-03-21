@@ -9,8 +9,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from meno_core.config.settings import settings
-from meno_core.core.rag.ingestion.corpus_builder import DEFAULT_INPUT_PATHS, build_chunk_rag_corpus
+from meno_core.config.settings import settings  # noqa: E402
+from meno_core.core.rag.ingestion.corpus_builder import DEFAULT_INPUT_PATHS, build_chunk_rag_corpus  # noqa: E402
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

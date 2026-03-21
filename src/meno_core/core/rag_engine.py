@@ -1,8 +1,6 @@
 import contextvars
 import json
 import logging
-import math
-import os
 import re
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -610,7 +608,7 @@ async def is_likely_hallucination(
     return is_h, score
 
 
-async def initialize_rag() -> tuple["LightRAGEngine", GTEEmbedding, BM25Okapi, list[tuple[Any, Any]]]:
+async def initialize_rag() -> tuple:  # returns (LightRAGEngine, GTEEmbedding, BM25Okapi, list)
     """
     Инициализирует объект LightRAG.
 

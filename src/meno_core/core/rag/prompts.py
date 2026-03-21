@@ -1,6 +1,6 @@
 # LLM Prompts for Chunk RAG Mode
 
-TITLE_EXTRACTION_PROMPT = """You are an AI assistant helping to extract the main title of a document. 
+TITLE_EXTRACTION_PROMPT = """You are an AI assistant helping to extract the main title of a document.
 You will be provided with the first few chunks of a document.
 Please identify the most appropriate global title for this document.
 Reply ONLY with the title string and nothing else.
