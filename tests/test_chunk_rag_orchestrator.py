@@ -73,7 +73,7 @@ def test_chunk_rag_pipeline_exposes_debug_payload(chunk_metadata: ChunkMetadata)
         reranker=reranker,
     )
 
-    orchestrator.query_processor.process_query = AsyncMock(
+    orchestrator.query_processor.process_query = AsyncMock(  # type: ignore[method-assign]
         return_value=QueryRepresentations(
             original_query="What is NSU?",
             rewritten_query="What is NSU?",
@@ -83,10 +83,10 @@ def test_chunk_rag_pipeline_exposes_debug_payload(chunk_metadata: ChunkMetadata)
             is_meaningful=True,
         )
     )
-    orchestrator.assembler.assemble = MagicMock(
+    orchestrator.assembler.assemble = MagicMock(  # type: ignore[method-assign]
         return_value=("Документ: Test Doc\nNSU is a university in Novosibirsk.", [])
     )
-    orchestrator.generator.generate_answer = AsyncMock(return_value=("NSU is a university.", False))
+    orchestrator.generator.generate_answer = AsyncMock(return_value=("NSU is a university.", False))  # type: ignore[method-assign]
 
     response = asyncio.run(orchestrator.answer(RagRequest(question="What is NSU?")))
 
@@ -136,7 +136,7 @@ def test_chunk_rag_bypasses_query_processor_when_rewrite_disabled(chunk_metadata
         reranker=reranker,
     )
 
-    orchestrator.query_processor.process_query = AsyncMock(side_effect=AssertionError("should not be called"))
+    orchestrator.query_processor.process_query = AsyncMock(side_effect=AssertionError("should not be called"))  # type: ignore[method-assign]
 
     response = asyncio.run(orchestrator.answer(RagRequest(question="Where is NSU?")))
 
@@ -188,7 +188,7 @@ def test_chunk_rag_uses_rewritten_query_and_caps_search_query_fanout(chunk_metad
         reranker=reranker,
     )
 
-    orchestrator.query_processor.process_query = AsyncMock(
+    orchestrator.query_processor.process_query = AsyncMock(  # type: ignore[method-assign]
         return_value=QueryRepresentations(
             original_query="Whre is NSU?",
             rewritten_query="Where is NSU?",
@@ -198,8 +198,8 @@ def test_chunk_rag_uses_rewritten_query_and_caps_search_query_fanout(chunk_metad
             is_meaningful=True,
         )
     )
-    orchestrator.assembler.assemble = MagicMock(return_value=("Документ: Test Doc\nNSU is a university in Novosibirsk.", []))
-    orchestrator.generator.generate_answer = AsyncMock(return_value=("NSU is in Novosibirsk.", False))
+    orchestrator.assembler.assemble = MagicMock(return_value=("Документ: Test Doc\nNSU is a university in Novosibirsk.", []))  # type: ignore[method-assign]
+    orchestrator.generator.generate_answer = AsyncMock(return_value=("NSU is in Novosibirsk.", False))  # type: ignore[method-assign]
 
     asyncio.run(orchestrator.answer(RagRequest(question="Whre is NSU?")))
 

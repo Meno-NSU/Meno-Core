@@ -19,7 +19,8 @@ async def load_chunks_from_compiled_corpus(
     build_chunk_fn: ChunkBuilder | None = None,
 ) -> list[Any]:
     if build_chunk_fn is None:
-        from meno_core.core.rag.ingestion.chunker import build_chunk as build_chunk_fn
+        from meno_core.core.rag.ingestion.chunker import build_chunk
+        build_chunk_fn = build_chunk
 
     chunks: list[Any] = []
     with path.open("r", encoding="utf-8") as fp:

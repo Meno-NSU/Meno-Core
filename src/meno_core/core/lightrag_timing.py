@@ -202,7 +202,7 @@ class RagRequestTrace:
             for key, value in self.counters.items()
         }
         if error is not None:
-            counters["error"] = type(error).__name__
+            counters["error"] = type(error).__name__  # type: ignore[assignment]
         if timings_sink is not None:
             timings_sink.update(self.export_stage_timings())
         request_logger.info(

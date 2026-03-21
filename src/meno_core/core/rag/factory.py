@@ -1,5 +1,5 @@
 import logging
-from typing import Union
+from typing import Any, Union
 from pathlib import Path
 
 from meno_core.config.settings import settings
@@ -30,13 +30,13 @@ async def build_chunk_rag_orchestrator(
     config = ChunkRagConfig()
     retrieval_logger.setLevel(getattr(logging, config.retrieval_log_level.upper(), logging.INFO))
     model_registry = load_chunk_rag_model_registry(embedder)
-    dense_embedders = {
+    dense_embedders: dict[str, Any] = {
         "multilingual_dense": model_registry.multilingual_dense,
         "russian_dense": model_registry.russian_dense,
     }
     indexer = Indexer(
         working_dir=working_dir,
-        dense_embedders=dense_embedders,
+        dense_embedders=dense_embedders,  # type: ignore[arg-type]
         reranker_path=model_registry.reranker.model_path,
         config=config,
     )
@@ -65,7 +65,7 @@ async def build_chunk_rag_orchestrator(
         dense_retrievers = {
             "multilingual_dense": ZvecDenseRetriever(
                 name="multilingual_dense",
-                embedder=model_registry.multilingual_dense,
+                embedder=model_registry.multilingual_dense,  # type: ignore[arg-type]
                 collection=collections["multilingual_dense"],
                 chunk_map=chunk_map,
                 debug_enabled=config.debug_retrieval,
@@ -89,7 +89,7 @@ async def build_chunk_rag_orchestrator(
 
         orchestrator = ChunkRagOrchestrator(
             config=config,
-            dense_retrievers=dense_retrievers,
+            dense_retrievers=dense_retrievers,  # type: ignore[arg-type]
             lexical_retriever=lexical_retriever,
             reranker=QwenCausalReranker(
                 backend=model_registry.reranker,

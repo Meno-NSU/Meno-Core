@@ -8,7 +8,7 @@ from meno_core.core.rag.models import RetrievedChunk, RagSource
 logger = logging.getLogger(__name__)
 
 try:
-    _encoding = tiktoken.get_encoding("cl100k_base")
+    _encoding: tiktoken.Encoding | None = tiktoken.get_encoding("cl100k_base")
 except Exception:
     _encoding = None
 

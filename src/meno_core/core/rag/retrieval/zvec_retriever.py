@@ -60,8 +60,8 @@ class ZvecDenseRetriever(BaseRetriever):
             for zvec_results in zvec_results_by_query:
                 query_results: list[RetrievedChunk] = []
                 for r in zvec_results:
-                    doc_id = str(r["id"])
-                    score = float(r.get("score", 0.0))
+                    doc_id = str(r["id"])  # type: ignore[index]
+                    score = float(r.get("score", 0.0))  # type: ignore[union-attr]
                     chunk_obj = self.chunk_map.get(doc_id)
                     if chunk_obj is None:
                         logger.warning("Zvec returned ID %s but it's not in chunk map.", doc_id)
@@ -70,7 +70,7 @@ class ZvecDenseRetriever(BaseRetriever):
                         RetrievedChunk(
                             chunk=chunk_obj,
                             score=score,
-                            source=self.name
+                            source=self.name  # type: ignore[arg-type]
                         )
                     )
                 results_by_query.append(query_results)
