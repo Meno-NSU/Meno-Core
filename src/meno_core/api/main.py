@@ -713,10 +713,9 @@ async def chat_completions(request: OAIChatCompletionsRequest, raw_request: Fast
 
             yield "data: [DONE]\n\n"
             full_answer = "".join(accumulated)
-            clean_answer = _strip_stage_tags(full_answer)
             if collector is not None:
                 try:
-                    collector.add_model_answer(session_id=session_id, text=clean_answer)
+                    collector.add_model_answer(session_id=session_id, text=full_answer)
                 except Exception as collector_error:
                     _disable_collector(collector_error)
 
