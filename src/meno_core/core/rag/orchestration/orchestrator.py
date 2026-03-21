@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from typing import Any, Dict, List
 
 from meno_core.core.lightrag_timing import get_current_rag_trace
+from meno_core.core.rag.stage_event import stage_event, stage_started
 from meno_core.core.rag.config import ChunkRagConfig
 from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.fusion.merger import HybridFusion
@@ -273,7 +274,7 @@ class ChunkRagOrchestrator:
                 )
 
             step_start = time.time()
-            answer_text, insuff_flag = await self.generator.generate_answer(
+            answer_result, insuff_flag = await self.generator.generate_answer(
                 question=representations.resolved_coreferences,
                 context=context_str,
                 sources=sources,
@@ -282,6 +283,7 @@ class ChunkRagOrchestrator:
                 override_model=request.model,
                 override_base_url=request.base_url
             )
+            answer_text = str(answer_result)  # always str when stream=False
             generation_ms = round((time.time() - step_start) * 1000, 2)
             telemetry["steps_latency_ms"]["llm_nonstream"] = generation_ms
             telemetry["total_latency_ms"] = round((time.time() - start_time) * 1000, 2)
@@ -460,35 +462,26 @@ class ChunkRagOrchestrator:
             yield {"_stage": "generation", "status": "started"}
 
             step_start = time.time()
-            from meno_core.core.rag.llm_client import call_llm
-            from meno_core.core.rag.prompts import RAG_ANSWER_SYSTEM_PROMPT
-
-            if not context_str.strip():
-                yield "К сожалению, в базе данных недостаточно информации для ответа на этот вопрос."
-                return
-
-            history_msgs = [{"role": m.role, "content": m.text} for m in request.history]
-            prompt = RAG_ANSWER_SYSTEM_PROMPT.format(context=context_str, question=representations.resolved_coreferences)
-
-            result = await call_llm(
-                prompt=prompt,
-                history_messages=history_msgs,
+            result_iter, _insuff = await self.generator.generate_answer(
+                question=representations.resolved_coreferences,
+                context=context_str,
+                sources=sources,
+                history=request.history,
                 stream=True,
                 override_model=request.model,
                 override_base_url=request.base_url,
-                preserve_thinking=True,
             )
 
             first_chunk = True
-            if hasattr(result, "__aiter__"):
-                async for token in result:
+            if hasattr(result_iter, "__aiter__"):
+                async for token in result_iter:
                     if first_chunk:
                         if trace is not None:
                             trace.mark_llm_stream_first_chunk()
                         first_chunk = False
                     yield str(token)
             else:
-                yield str(result)
+                yield str(result_iter)
 
             if trace is not None:
                 trace.mark_llm_stream_complete()

@@ -1,7 +1,8 @@
 import logging
 import random
 import asyncio
-from typing import List, Tuple, Optional
+from collections.abc import AsyncIterator
+from typing import List, Tuple, Optional, Union
 
 from meno_core.core.rag.models import RagMessage, RagSource
 from meno_core.core.rag.prompts import RAG_ANSWER_SYSTEM_PROMPT, FALLBACK_AGGREGATION_PROMPT
@@ -33,15 +34,19 @@ class AnswerGenerator:
         history: List[RagMessage],
         stream: bool = False,
         override_model: Optional[str] = None,
-        override_base_url: Optional[str] = None
-    ) -> Tuple[str, bool]:
-        """
-        Generate answer based on question and context.
-        Returns:
-            answer_text: generated string
-            insufficient_information: boolean flag
+        override_base_url: Optional[str] = None,
+    ) -> Union[Tuple[str, bool], Tuple[AsyncIterator[str], bool]]:
+        """Generate answer based on question and context.
+
+        When *stream* is ``False`` returns ``(answer_text, insufficient_information)``.
+        When *stream* is ``True`` returns ``(async_iterator, False)`` — hallucination
+        check is skipped because the full text is not available yet.
         """
         if not context.strip():
+            if stream:
+                async def _empty_stream() -> AsyncIterator[str]:
+                    yield "К сожалению, в базе данных недостаточно информации для ответа на этот вопрос."
+                return _empty_stream(), True
             return "К сожалению, в базе данных недостаточно информации для ответа на этот вопрос.", True
 
         history_msgs = [{"role": m.role, "content": m.text} for m in history]
@@ -60,6 +65,11 @@ class AnswerGenerator:
             override_base_url=override_base_url,
             preserve_thinking=True,
         )
+
+        # Streaming: return the async iterator directly (no hallucination check)
+        if stream:
+            return result, False  # type: ignore[return-value]
+
         answer = str(result) if not isinstance(result, str) else result
 
         # Strip <think> for hallucination check but keep it in the answer
