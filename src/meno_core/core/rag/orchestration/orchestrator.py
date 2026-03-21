@@ -4,7 +4,6 @@ from collections.abc import AsyncIterator
 from typing import Any, Dict, List
 
 from meno_core.core.lightrag_timing import get_current_rag_trace
-from meno_core.core.rag.stage_event import stage_event, stage_started
 from meno_core.core.rag.config import ChunkRagConfig
 from meno_core.core.rag.debug_utils import build_retrieved_chunk_preview
 from meno_core.core.rag.fusion.merger import HybridFusion

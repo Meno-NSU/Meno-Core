@@ -1,7 +1,6 @@
 """Observable pipeline stages and latency tracking for the RAG SSE stream."""
 
 import json
-import re
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum

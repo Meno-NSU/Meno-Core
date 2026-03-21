@@ -13,7 +13,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from logging import Logger
 from pathlib import Path
-from typing import List, Dict, Optional, Union, AsyncIterator, Any
+from typing import List, Dict, Optional, Union, AsyncIterator
 from typing import Literal, Tuple
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
@@ -638,17 +638,6 @@ async def chat_completions(request: OAIChatCompletionsRequest, raw_request: Fast
         # Role chunk
         first = mk_chunk({"role": "assistant"})
         yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
-
-        # --- Emit pre-pipeline <stage> events for stages already completed ---
-        from meno_core.core.rag.stage_event import stage_event as _stage_event, strip_stage_tags as _strip_stage_tags
-        for _stage_name, _stage_key, _stage_summary in (
-            ("expand_abbreviations", "expand", "Аббревиатуры раскрыты"),
-            ("resolve_anaphora", "resolve", "Кореференции разрешены"),
-        ):
-            _ms = request_timings_ms.get(_stage_key)
-            if _ms is not None:
-                _tag = _stage_event(_stage_name, _ms, _stage_summary)
-                yield f"data: {json.dumps(chunk({'content': _tag}), ensure_ascii=False)}\n\n"
 
         accumulated: list[str] = []
 
