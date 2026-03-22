@@ -497,6 +497,14 @@ class ChunkRagOrchestrator:
                 "_stage": "generation", "status": "completed", "duration_ms": generation_ms,
             }
 
+            if sources:
+                yield {
+                    "_sources": [
+                        {"document_title": s.document_title, "source_url": s.source_url}
+                        for s in sources if s.source_url
+                    ]
+                }
+
             pipeline_logger.info(
                 "request-finished request_id=%s session_id=%s total_ms=%s generation_ms=%s stream=true sources=%s",
                 request_id, session_id, total_ms, generation_ms, len(sources),

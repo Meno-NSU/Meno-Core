@@ -435,6 +435,8 @@ async def chat_completions(request: OAIChatCompletionsRequest, raw_request: Fast
         logger.exception("Anaphora resolution failed", exc_info=resolve_error)
         resolved_query = expanded_query
     request_timings_ms["resolve"] = round((time.perf_counter() - resolve_started_at) * 1000, 2)
+    request_timings_ms["_anaphora_changed"] = (resolved_query != expanded_query)
+    request_timings_ms["_resolved_query"] = resolved_query
     request_timings_ms["request_prepare"] = round(
         request_timings_ms["prompt_build"] + request_timings_ms["expand"] + request_timings_ms["resolve"],
         2,
@@ -630,10 +632,15 @@ async def chat_completions(request: OAIChatCompletionsRequest, raw_request: Fast
                 yield emit_stage(StageName.ABBREVIATION_EXPANSION.value, StageStatus.COMPLETED.value, duration_ms=expand_ms)
 
             resolve_ms = request_timings_ms.get("resolve")
-            if resolve_ms is not None:
+            if resolve_ms is not None and request_timings_ms.get("_anaphora_changed"):
                 timer.stages[StageName.ANAPHORA_RESOLUTION.value] = resolve_ms
                 yield emit_stage(StageName.ANAPHORA_RESOLUTION.value, StageStatus.STARTED.value)
-                yield emit_stage(StageName.ANAPHORA_RESOLUTION.value, StageStatus.COMPLETED.value, duration_ms=resolve_ms)
+                yield emit_stage(
+                    StageName.ANAPHORA_RESOLUTION.value,
+                    StageStatus.COMPLETED.value,
+                    duration_ms=resolve_ms,
+                    detail={"resolved_query": request_timings_ms.get("_resolved_query", "")},
+                )
 
         # Role chunk
         first = mk_chunk({"role": "assistant"})
@@ -662,6 +669,23 @@ async def chat_completions(request: OAIChatCompletionsRequest, raw_request: Fast
                 splitter = ThinkingTokenSplitter()
 
                 async for piece in iter_pieces():
+                    # Source references from orchestrator (ChunkRAG)
+                    if isinstance(piece, dict) and "_sources" in piece:
+                        sources_list = piece["_sources"]
+                        if emit_stages and sources_list:
+                            yield f"event: sources\ndata: {json.dumps({'sources': sources_list}, ensure_ascii=False)}\n\n"
+                        if sources_list:
+                            links_md = "\n\n---\n**Источники:**\n"
+                            for src in sources_list:
+                                title = src.get("document_title", "")
+                                url = src.get("source_url", "")
+                                if url:
+                                    links_md += f"- [{title}]({url})\n" if title else f"- {url}\n"
+                            accumulated.append(links_md)
+                            data = mk_chunk({"content": links_md})
+                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                        continue
+
                     # Stage event dicts from orchestrator.answer_stream()
                     if isinstance(piece, dict) and "_stage" in piece:
                         if emit_stages:

@@ -23,8 +23,6 @@ class StageName(str, Enum):
     GRAPH_GLOBAL_RETRIEVAL = "graph_global_retrieval"
     VECTOR_RETRIEVAL = "vector_retrieval"
     CONTEXT_BUILD = "context_build"
-    LINK_ADDITION = "link_addition"
-    LINK_CORRECTION = "link_correction"
 
 
 class StageStatus(str, Enum):
