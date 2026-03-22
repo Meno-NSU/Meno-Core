@@ -93,7 +93,7 @@ async def build_chunk_rag_orchestrator(
             lexical_retriever=lexical_retriever,
             reranker=QwenCausalReranker(
                 backend=model_registry.reranker,
-                filter_threshold=0.0,
+                filter_threshold=config.reranker_filter_threshold,
                 preview_k=config.retrieval_preview_k,
             ),
         )

@@ -66,9 +66,14 @@ class AnswerGenerator:
             preserve_thinking=True,
         )
 
-        # Streaming: return the async iterator directly (no hallucination check)
+        # Streaming: wrap the iterator to run a post-stream hallucination check.
+        # After all tokens are yielded, we check the accumulated text and yield
+        # a warning suffix if hallucination is detected.
         if stream:
-            return result, False  # type: ignore[return-value]
+            return self._wrap_stream_with_hallucination_check(
+                result,  # type: ignore[arg-type]
+                question,
+            ), False
 
         answer = str(result) if not isinstance(result, str) else result
 
@@ -84,6 +89,35 @@ class AnswerGenerator:
                 return "Ответ извлечен, но может быть неточным или недостаточно обоснован в контексте.", True
 
         return answer, insuff_info
+
+    async def _wrap_stream_with_hallucination_check(
+        self,
+        token_iter: AsyncIterator[str],
+        question: str,
+    ) -> AsyncIterator[str]:
+        """Yield all tokens from the LLM stream, then run hallucination check on
+        the accumulated answer. If hallucination is detected, yield a warning."""
+        from meno_core.core.rag_engine import _strip_reasoning_prefix
+
+        collected: list[str] = []
+        async for token in token_iter:
+            collected.append(str(token))
+            yield str(token)
+
+        full_answer = "".join(collected)
+        answer_for_check = _strip_reasoning_prefix(full_answer)
+
+        if "недостаточно информации" in answer_for_check.lower():
+            return
+
+        try:
+            is_hallucinating, _ = await is_likely_hallucination(
+                question, answer_for_check, self.hallucination_threshold
+            )
+            if is_hallucinating:
+                yield "\n\n⚠️ *Внимание: ответ может быть неточным или недостаточно обоснован в контексте.*"
+        except Exception:
+            logger.warning("Post-stream hallucination check failed", exc_info=True)
 
     async def _generate_with_reliability_fallback(
         self,

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -120,19 +121,20 @@ class ChunkRagOrchestrator:
 
             step_start = time.time()
             dense_queries, lexical_queries = self._build_retrieval_queries(request.question, representations)
-            retrieval_batches = []
+            retrieval_tasks = []
             for source_name, retriever in self.dense_retrievers.items():
                 top_k = (
                     self.config.top_k_dense_multilingual
                     if source_name == "multilingual_dense"
                     else self.config.top_k_dense_russian
                 )
-                retrieval_batches.append(
-                    await self._timed_retrieve_many(source_name, dense_queries, retriever, top_k)
+                retrieval_tasks.append(
+                    self._timed_retrieve_many(source_name, dense_queries, retriever, top_k)
                 )
-            retrieval_batches.append(
-                await self._timed_retrieve_many("lexical", lexical_queries, self.lexical_retriever, self.config.top_k_bm25)
+            retrieval_tasks.append(
+                self._timed_retrieve_many("lexical", lexical_queries, self.lexical_retriever, self.config.top_k_bm25)
             )
+            retrieval_batches = list(await asyncio.gather(*retrieval_tasks))
 
             grouped_results: Dict[str, List[List[RetrievedChunk]]] = {
                 "multilingual_dense": [],
@@ -370,22 +372,23 @@ class ChunkRagOrchestrator:
                 },
             }
 
-            # --- retrieval ---
+            # --- retrieval (parallel) ---
             step_start = time.time()
             dense_queries, lexical_queries = self._build_retrieval_queries(request.question, representations)
-            retrieval_batches = []
+            retrieval_tasks = []
             for source_name, retriever in self.dense_retrievers.items():
                 top_k = (
                     self.config.top_k_dense_multilingual
                     if source_name == "multilingual_dense"
                     else self.config.top_k_dense_russian
                 )
-                retrieval_batches.append(
-                    await self._timed_retrieve_many(source_name, dense_queries, retriever, top_k)
+                retrieval_tasks.append(
+                    self._timed_retrieve_many(source_name, dense_queries, retriever, top_k)
                 )
-            retrieval_batches.append(
-                await self._timed_retrieve_many("lexical", lexical_queries, self.lexical_retriever, self.config.top_k_bm25)
+            retrieval_tasks.append(
+                self._timed_retrieve_many("lexical", lexical_queries, self.lexical_retriever, self.config.top_k_bm25)
             )
+            retrieval_batches = list(await asyncio.gather(*retrieval_tasks))
 
             grouped_results: Dict[str, List[List[RetrievedChunk]]] = {
                 "multilingual_dense": [], "russian_dense": [], "lexical": [],
@@ -524,13 +527,12 @@ class ChunkRagOrchestrator:
         original_question: str,
         representations: QueryRepresentations,
     ) -> tuple[list[str], list[str]]:
+        # Use resolved_coreferences as the primary retrieval query (history context
+        # is already baked in via anaphora resolution). search_queries provide
+        # additional query diversity from the LLM rewrite step.
         search_queries = cls._stable_unique(representations.search_queries)[:2]
         lexical_queries = cls._stable_unique(
-            [
-                representations.rewritten_query,
-                representations.resolved_coreferences,
-                *search_queries,
-            ]
+            [representations.resolved_coreferences, *search_queries]
         )
         dense_queries = list(lexical_queries)
         if representations.hypothetical_document:

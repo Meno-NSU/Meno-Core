@@ -140,5 +140,5 @@ class BM25LexicalRetriever(BaseRetriever):
             return results_by_query
 
         except Exception as e:
-            logger.error(f"Error during Lexical Retrieval: {e}", exc_info=True)
+            logger.error("Lexical retrieval FAILED, returning empty results for %s queries: %s", len(queries), e, exc_info=True)
             return [[] for _ in queries]
