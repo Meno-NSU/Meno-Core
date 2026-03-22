@@ -18,6 +18,11 @@ class StageName(str, Enum):
     CONTEXT_ASSEMBLY = "context_assembly"
     GENERATION = "generation"
     RETRIEVAL_AND_GENERATION = "retrieval_and_generation"
+    KEYWORDS_EXTRACT = "keywords_extract"
+    GRAPH_LOCAL_RETRIEVAL = "graph_local_retrieval"
+    GRAPH_GLOBAL_RETRIEVAL = "graph_global_retrieval"
+    VECTOR_RETRIEVAL = "vector_retrieval"
+    CONTEXT_BUILD = "context_build"
 
 
 class StageStatus(str, Enum):
