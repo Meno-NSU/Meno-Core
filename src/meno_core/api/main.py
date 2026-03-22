@@ -435,8 +435,7 @@ async def chat_completions(request: OAIChatCompletionsRequest, raw_request: Fast
         logger.exception("Anaphora resolution failed", exc_info=resolve_error)
         resolved_query = expanded_query
     request_timings_ms["resolve"] = round((time.perf_counter() - resolve_started_at) * 1000, 2)
-    request_timings_ms["_anaphora_changed"] = (resolved_query != expanded_query)
-    request_timings_ms["_resolved_query"] = resolved_query
+    anaphora_changed = (resolved_query != expanded_query)
     request_timings_ms["request_prepare"] = round(
         request_timings_ms["prompt_build"] + request_timings_ms["expand"] + request_timings_ms["resolve"],
         2,
@@ -632,14 +631,14 @@ async def chat_completions(request: OAIChatCompletionsRequest, raw_request: Fast
                 yield emit_stage(StageName.ABBREVIATION_EXPANSION.value, StageStatus.COMPLETED.value, duration_ms=expand_ms)
 
             resolve_ms = request_timings_ms.get("resolve")
-            if resolve_ms is not None and request_timings_ms.get("_anaphora_changed"):
+            if resolve_ms is not None and anaphora_changed:
                 timer.stages[StageName.ANAPHORA_RESOLUTION.value] = resolve_ms
                 yield emit_stage(StageName.ANAPHORA_RESOLUTION.value, StageStatus.STARTED.value)
                 yield emit_stage(
                     StageName.ANAPHORA_RESOLUTION.value,
                     StageStatus.COMPLETED.value,
                     duration_ms=resolve_ms,
-                    detail={"resolved_query": request_timings_ms.get("_resolved_query", "")},
+                    detail={"resolved_query": resolved_query},
                 )
 
         # Role chunk
