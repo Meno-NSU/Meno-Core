@@ -61,7 +61,7 @@ def test_lightrag_timing_stream(caplog):
     engine = LightRAGEngine(rag_instance=rag, embedder=None, bm25=None, chunk_db=[])
     timings: dict[str, float] = {}
 
-    async def _run() -> str:
+    async def _run() -> tuple[str, list[dict]]:
         result = await engine.aquery(
             "question",
             param=_FakeParam(stream=True),
