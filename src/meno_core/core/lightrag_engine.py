@@ -81,14 +81,20 @@ class LightRAGEngine:
             async def _wrapped_stream():
                 import time as _time
 
-                # Emit individual sub-stage dicts from timing hooks
-                for stage_name, duration_ms, meta in trace.stage_events:
-                    yield {
-                        "_stage": stage_name,
-                        "status": "completed",
-                        "duration_ms": round(duration_ms, 2),
-                        "detail": meta or None,
-                    }
+                # Emit a single retrieval event with wall-clock time
+                retrieval_ms = round((trace.started_at and (_time.perf_counter() - trace.started_at) * 1000) or 0, 2)
+                # Extract user-meaningful totals from sub-stage metadata
+                sources_found = 0
+                for _sname, _dur, meta in trace.stage_events:
+                    if meta:
+                        sources_found += int(meta.get("final_chunks", 0))
+                        sources_found += int(meta.get("merged_chunks", 0))
+                detail = {"sources_found": sources_found} if sources_found else None
+                yield {
+                    "_stage": "retrieval", "status": "completed",
+                    "duration_ms": retrieval_ms,
+                    "detail": detail,
+                }
                 yield {"_stage": "generation", "status": "started"}
 
                 gen_start = _time.time()
