@@ -29,9 +29,13 @@ class ContextAssembler:
     def __init__(self, token_budget: int = 4000):
         self.token_budget = token_budget
 
+    # Approximate token overhead per separator between documents
+    _SEPARATOR_OVERHEAD = estimate_tokens("\n\n---\n\n") if _encoding else 4
+
     def assemble(self, chunks: List[RetrievedChunk]) -> Tuple[str, List[RagSource]]:
         """
         Greedy packing of chunks up to token_budget.
+        Uses incremental token counting to avoid O(n²) re-rendering.
         Returns:
             context_string: Text to be injected into the prompt.
             sources: List of RagSource models used in this context.
@@ -41,6 +45,7 @@ class ContextAssembler:
 
         doc_order: list[str] = []
         doc_grouped: Dict[str, dict] = {}
+        running_tokens = 0
 
         selected_chunk_count = 0
         for c in chunks:
@@ -48,6 +53,30 @@ class ContextAssembler:
             doc_id = meta.document_id
             is_new_doc = doc_id not in doc_grouped
 
+            # Estimate the token cost of adding this chunk
+            added_tokens = 0
+            if is_new_doc:
+                header = f"Документ: {meta.document_title}\n"
+                url = meta.source_url or ""
+                if url:
+                    header += f"Источник: {url}\n"
+                added_tokens += estimate_tokens(header)
+                # Separator between documents (except the first)
+                if doc_order:
+                    added_tokens += self._SEPARATOR_OVERHEAD
+
+            if meta.section_title:
+                chunk_line = f"Раздел [{meta.section_title}]: {c.chunk.text}\n"
+            else:
+                chunk_line = f"{c.chunk.text}\n"
+            added_tokens += estimate_tokens(chunk_line)
+
+            candidate_tokens = running_tokens + added_tokens
+            if candidate_tokens > self.token_budget and selected_chunk_count > 0:
+                # Over budget and we already have at least one chunk — skip
+                continue
+
+            # Accept chunk
             if is_new_doc:
                 doc_order.append(doc_id)
                 doc_grouped[doc_id] = {
@@ -57,18 +86,8 @@ class ContextAssembler:
                 }
 
             doc_grouped[doc_id]["chunks"].append(c.chunk)
-            context_candidate, _ = self._render(doc_order, doc_grouped)
-            if estimate_tokens(context_candidate) <= self.token_budget or selected_chunk_count == 0:
-                selected_chunk_count += 1
-                continue
-
-            doc_grouped[doc_id]["chunks"].pop()
-            if not doc_grouped[doc_id]["chunks"]:
-                del doc_grouped[doc_id]
-                if doc_order and doc_order[-1] == doc_id:
-                    doc_order.pop()
-                else:
-                    doc_order = [item for item in doc_order if item != doc_id]
+            running_tokens = candidate_tokens
+            selected_chunk_count += 1
 
         return self._render(doc_order, doc_grouped)
 

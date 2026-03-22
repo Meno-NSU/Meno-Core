@@ -643,6 +643,9 @@ async def initialize_rag() -> tuple:  # returns (LightRAGEngine, GTEEmbedding, B
             pass
 
         logger.info("Creating LightRAG instance...")
+        # Cosine thresholds: storage threshold (0.15) is stricter to avoid indexing
+        # low-quality matches; retrieval threshold (0.05) is lenient to avoid
+        # missing potentially relevant results during search.
         rag: LightRAG = LightRAG(
             working_dir=str(WORKING_DIR),
             kv_storage='JsonKVStorage',

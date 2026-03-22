@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     chunk_rag_hypothetical_doc_enabled: bool = Field(default=True, validation_alias="CHUNK_RAG_HYPOTHETICAL_DOC_ENABLED")
     chunk_rag_reliability_mode_enabled: bool = Field(default=False, validation_alias="CHUNK_RAG_RELIABILITY_MODE_ENABLED")
     chunk_rag_hallucination_threshold: float = Field(default=0.4, validation_alias="CHUNK_RAG_HALLUCINATION_THRESHOLD")
+    chunk_rag_reranker_filter_threshold: float = Field(default=0.0, validation_alias="CHUNK_RAG_RERANKER_FILTER_THRESHOLD")
     chunk_rag_fusion_weight_multilingual: float = Field(
         default=0.35,
         validation_alias="CHUNK_RAG_FUSION_WEIGHT_MULTILINGUAL",
@@ -139,8 +140,8 @@ class Settings(BaseSettings):
 
     chunk_max_tokens: int = Field(default=1024, validation_alias="CHUNK_MAX_TOKENS")
 
-    entity_max_tokens: int = Field(default=2816, validation_alias="ENTITY_MAX_TOKENS")
-    relation_max_tokens: int = Field(default=4096, validation_alias="RELATION_MAX_TOKENS")
+    entity_max_tokens: int = Field(default=2000, validation_alias="ENTITY_MAX_TOKENS")
+    relation_max_tokens: int = Field(default=3000, validation_alias="RELATION_MAX_TOKENS")
 
     # LOGS
     log_file_path: Path = Field(

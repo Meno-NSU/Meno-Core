@@ -24,6 +24,7 @@ class ChunkRagConfig(BaseModel):
 
     # Thresholds
     hallucination_threshold: float = Field(default_factory=lambda: settings.chunk_rag_hallucination_threshold)
+    reranker_filter_threshold: float = Field(default_factory=lambda: settings.chunk_rag_reranker_filter_threshold)
     fusion_weight_multilingual: float = Field(default_factory=lambda: settings.chunk_rag_fusion_weight_multilingual)
     fusion_weight_russian: float = Field(default_factory=lambda: settings.chunk_rag_fusion_weight_russian)
     fusion_weight_bm25: float = Field(default_factory=lambda: settings.chunk_rag_fusion_weight_bm25)

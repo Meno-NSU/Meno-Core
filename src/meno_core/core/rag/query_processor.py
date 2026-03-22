@@ -107,6 +107,10 @@ class QueryProcessor:
             resolved_coreferences = _safe_text(json_response.get("resolved_coreferences"), rewritten_query)
             search_queries = _parse_string_list(json_response.get("search_queries"))
             if not search_queries:
+                logger.warning(
+                    "Query rewrite produced no search_queries, falling back to rewritten_query. "
+                    "Original query: %r", query
+                )
                 search_queries = [rewritten_query]
 
             representations = QueryRepresentations(
@@ -121,8 +125,10 @@ class QueryProcessor:
             return representations
 
         except Exception as e:
-            logger.error(f"Error during query processing: {e}", exc_info=True)
-            # Safe Fallback
+            logger.warning(
+                "Query processing FAILED, falling back to passthrough. Query: %r, Error: %s",
+                query, e, exc_info=True,
+            )
             return QueryRepresentations(
                 original_query=query,
                 rewritten_query=query,
