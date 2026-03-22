@@ -81,14 +81,13 @@ class LightRAGEngine:
             async def _wrapped_stream():
                 import time as _time
 
-                # Emit stage dicts (same format as ChunkRagOrchestrator.answer_stream)
-                retrieval_ms = sum(trace.stage_totals_ms.values())
-                stage_count = sum(trace.stage_counts.values())
-                if stage_count:
+                # Emit individual sub-stage dicts from timing hooks
+                for stage_name, duration_ms, meta in trace.stage_events:
                     yield {
-                        "_stage": "retrieval", "status": "completed",
-                        "duration_ms": retrieval_ms,
-                        "detail": {"stages": stage_count},
+                        "_stage": stage_name,
+                        "status": "completed",
+                        "duration_ms": round(duration_ms, 2),
+                        "detail": meta or None,
                     }
                 yield {"_stage": "generation", "status": "started"}
 

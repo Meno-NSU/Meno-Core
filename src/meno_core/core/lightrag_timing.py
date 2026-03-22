@@ -133,6 +133,7 @@ class RagRequestTrace:
     stage_totals_ms: dict[str, float] = field(default_factory=dict)
     stage_counts: dict[str, int] = field(default_factory=dict)
     counters: dict[str, float] = field(default_factory=dict)
+    stage_events: list[tuple[str, float, dict[str, Any] | None]] = field(default_factory=list)
     llm_stream_started_at: float | None = None
     llm_first_chunk_logged: bool = False
     summary_logged: bool = False
@@ -140,6 +141,7 @@ class RagRequestTrace:
     def record_stage(self, stage: str, duration_ms: float, meta: dict[str, Any] | None = None) -> None:
         self.stage_totals_ms[stage] = self.stage_totals_ms.get(stage, 0.0) + duration_ms
         self.stage_counts[stage] = self.stage_counts.get(stage, 0) + 1
+        self.stage_events.append((stage, duration_ms, meta))
         request_logger.info(
             "rag-stage request_id=%s session_id=%s knowledge_base_id=%s rag_engine_id=%s stage=%s call=%s ms=%.2f meta=%s",
             self.request_id,
