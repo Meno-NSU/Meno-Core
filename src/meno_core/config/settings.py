@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     )
     max_links: int = Field(default=5, validation_alias="MAX_LINKS")
     top_k: int = Field(default=100, validation_alias="TOP_K")
-    chunk_top_k: int = Field(default=12, validation_alias="CHUNK_TOP_K")
+    chunk_top_k: int = Field(default=16, validation_alias="CHUNK_TOP_K")
     dist_threshold: float = Field(default=0.70, validation_alias="DIST_THRESHOLD")
     correct_dist_threshold: float = Field(
         default=0.1,
@@ -140,8 +140,8 @@ class Settings(BaseSettings):
 
     chunk_max_tokens: int = Field(default=1024, validation_alias="CHUNK_MAX_TOKENS")
 
-    entity_max_tokens: int = Field(default=2000, validation_alias="ENTITY_MAX_TOKENS")
-    relation_max_tokens: int = Field(default=3000, validation_alias="RELATION_MAX_TOKENS")
+    entity_max_tokens: int = Field(default=2816, validation_alias="ENTITY_MAX_TOKENS")
+    relation_max_tokens: int = Field(default=4096, validation_alias="RELATION_MAX_TOKENS")
 
     # LOGS
     log_file_path: Path = Field(
