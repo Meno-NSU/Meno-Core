@@ -168,38 +168,35 @@ def build_public_rag_backend_registry(
     lightrag_backend: RagChatBackend | None,
     chunk_rag_backend: RagChatBackend | None,
 ) -> RagBackendRegistry:
-    missing_backends: list[str] = []
-    if lightrag_backend is None:
-        missing_backends.append(RAG_ENGINE_LIGHTRAG)
-    if chunk_rag_backend is None:
-        missing_backends.append(RAG_ENGINE_CHUNK_RAG)
-    if missing_backends:
-        raise RuntimeError(
-            "Public RAG backend initialization failed for: " + ", ".join(sorted(missing_backends))
-        )
+    entries: list[RagBackendEntry] = []
 
-    assert lightrag_backend is not None
-    assert chunk_rag_backend is not None
-    entries = [
-        RagBackendEntry(
+    if lightrag_backend is not None:
+        entries.append(RagBackendEntry(
             knowledge_base_id=lightrag_kb_id,
             knowledge_base_name="Граф знаний",
             description="Поиск по графу знаний и связанным чанкам документов",
             rag_engine_id=RAG_ENGINE_LIGHTRAG,
             backend=lightrag_backend,
-        ),
-        RagBackendEntry(
+        ))
+
+    if chunk_rag_backend is not None:
+        entries.append(RagBackendEntry(
             knowledge_base_id=CHUNK_RAG_KB_ID,
             knowledge_base_name="Векторный поиск",
             description="Dense и BM25 поиск по текстовым чанкам с fusion и rerank",
             rag_engine_id=RAG_ENGINE_CHUNK_RAG,
             backend=chunk_rag_backend,
-        ),
-    ]
-    return RagBackendRegistry(
-        entries,
-        default_selection=(lightrag_kb_id, RAG_ENGINE_LIGHTRAG),
-    )
+        ))
+
+    if not entries:
+        raise RuntimeError("No RAG backends available: both LightRAG and ChunkRAG failed to initialize.")
+
+    if lightrag_backend is not None:
+        default = (lightrag_kb_id, RAG_ENGINE_LIGHTRAG)
+    else:
+        default = (CHUNK_RAG_KB_ID, RAG_ENGINE_CHUNK_RAG)
+
+    return RagBackendRegistry(entries, default_selection=default)
 
 
 class ChunkRagChatBackend:

@@ -41,6 +41,7 @@ from meno_core.core.rag_engine import (
     resolve_anaphora,
 )
 from meno_core.core.rag_runtime import (
+    RAG_ENGINE_LIGHTRAG,
     RagBackendRegistry,
     RagChatRequest,
     RagSelectionError,
@@ -107,20 +108,52 @@ async def lifespan(_: FastAPI):
     light_rag_logger.setLevel(logging.WARNING)
     light_rag_logger.handlers.clear()
     light_rag_logger.propagate = True
-    rag_instance, embedder_instance, bm25_instance, chunk_db_instance = await initialize_rag()
-    if not isinstance(rag_instance, LightRAGEngine):
-        raise RuntimeError("Public lightrag backend is unavailable. initialize_rag() must return LightRAGEngine.")
-
-    from meno_core.core.rag.factory import build_chunk_rag_orchestrator
-    chunk_rag_orchestrator = await build_chunk_rag_orchestrator(
-        working_dir=settings.chunk_rag_data_path,
-        embedder=embedder_instance
-    )
+    global unavailable_kbs
     lightrag_kb_id = settings.working_dir.name if settings.working_dir else "default-kb"
+
+    try:
+        rag_instance, embedder_instance, bm25_instance, chunk_db_instance = await initialize_rag()
+        if not isinstance(rag_instance, LightRAGEngine):
+            logger.warning("initialize_rag() did not return LightRAGEngine; Knowledge Graph mode will be unavailable.")
+            rag_instance = None
+    except Exception:
+        logger.exception("LightRAG initialization failed; Knowledge Graph mode will be unavailable.")
+        rag_instance = None
+
+    if rag_instance is None:
+        unavailable_kbs = [{
+            "id": lightrag_kb_id,
+            "name": "Граф знаний",
+            "description": "Поиск по графу знаний (недоступен)",
+            "supported_rag_engines": [RAG_ENGINE_LIGHTRAG],
+            "available": False,
+        }]
+
+    chunk_rag_backend = None
+    from meno_core.core.rag.factory import build_chunk_rag_orchestrator
+    try:
+        if embedder_instance is None:
+            from meno_core.core.gte_embedding import GTEEmbedding
+            from transformers import AutoTokenizer, AutoModelForTokenClassification  # type: ignore[import-untyped]
+            logger.info("Loading standalone embedder for ChunkRAG (LightRAG init did not provide one)...")
+            _tok = AutoTokenizer.from_pretrained(settings.multilingual_embedder_path)
+            _cls = AutoModelForTokenClassification.from_pretrained(
+                settings.multilingual_embedder_path, trust_remote_code=True, device_map='cpu',
+            )
+            _cls.eval()
+            embedder_instance = GTEEmbedding(_tok, _cls, normalized=True)
+        chunk_rag_orchestrator = await build_chunk_rag_orchestrator(
+            working_dir=settings.chunk_rag_data_path,
+            embedder=embedder_instance,
+        )
+        chunk_rag_backend = ChunkRagChatBackend(chunk_rag_orchestrator)
+    except Exception:
+        logger.exception("ChunkRAG initialization failed; vector search mode will be unavailable.")
+
     rag_backend_registry = build_public_rag_backend_registry(
         lightrag_kb_id=lightrag_kb_id,
         lightrag_backend=rag_instance,
-        chunk_rag_backend=ChunkRagChatBackend(chunk_rag_orchestrator),
+        chunk_rag_backend=chunk_rag_backend,
     )
     logger.info("✅ Public RAG backend registry initialized with %d knowledge base(s).",
                 len(rag_backend_registry.list_knowledge_bases()))
@@ -219,6 +252,7 @@ ref_corrector: Optional[LinkCorrecter] = None
 scheduler: Optional[AsyncIOScheduler] = None
 vllm_registry: Optional[VLLMRegistry] = None
 rag_backend_registry: Optional[RagBackendRegistry] = None
+unavailable_kbs: List[Dict[str, Any]] = []
 
 
 class ResetRequest(BaseModel):
@@ -932,8 +966,11 @@ async def refresh_models():
 async def list_knowledge_bases():
     if rag_backend_registry is None:
         raise RuntimeError("RAG registry is not initialized.")
+    available = rag_backend_registry.list_knowledge_bases()
+    for kb in available:
+        kb["available"] = True
     return {
         "object": "list",
-        "data": rag_backend_registry.list_knowledge_bases(),
+        "data": available + unavailable_kbs,
         "default_selection": rag_backend_registry.default_payload(),
     }
