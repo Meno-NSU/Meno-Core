@@ -123,6 +123,11 @@ class LightRAGEngine:
         reset_rag_request_trace(token)
         return result
 
+    _ERROR_MARKERS = (
+        "не удалось получить ответ",
+        "время ожидания ответа",
+    )
+
     async def answer(
         self,
         request: RagChatRequest,
@@ -130,7 +135,7 @@ class LightRAGEngine:
     ) -> str | AsyncIterator[str]:
         from lightrag import QueryParam  # type: ignore[import-untyped]
 
-        return await self.aquery(
+        result = await self.aquery(
             request.question,
             param=QueryParam(
                 mode=settings.query_mode,
@@ -153,6 +158,17 @@ class LightRAGEngine:
             route_reason=request.route_reason,
             timings_sink=timings_sink,
         )
+
+        # Log a warning when the LLM returned an error-fallback string
+        # (these get cached by LightRAG and silently served to users).
+        if isinstance(result, str) and any(marker in result for marker in self._ERROR_MARKERS):
+            logger.warning(
+                "LightRAG returned LLM error fallback for request_id=%s: %s",
+                request.request_id,
+                result[:200],
+            )
+
+        return result
 
     async def aclear_cache(self):
         """Pass-through to LightRAG's aclear_cache"""

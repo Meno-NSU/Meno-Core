@@ -302,7 +302,13 @@ async def llm_model_func(prompt: str,
         )
 
     except Exception as e:
-        logger.error("Error in llm_model_func (model=%s): %s", effective_model, str(e), exc_info=True)
+        logger.error(
+            "LLM call failed in llm_model_func (model=%s, prompt_len=%d): %s",
+            effective_model,
+            len(prompt) if prompt else 0,
+            str(e),
+            exc_info=True,
+        )
         return "Извините, сейчас не удалось получить ответ от модели."
 
 

@@ -40,8 +40,19 @@ async def call_llm(
         )
         return await asyncio.wait_for(coro, timeout=_LLM_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
-        logger.error("LLM call timed out after %s seconds", _LLM_TIMEOUT_SECONDS)
+        logger.error(
+            "LLM call timed out after %ss (model=%s, prompt_len=%d)",
+            _LLM_TIMEOUT_SECONDS,
+            override_model or "default",
+            len(prompt) if prompt else 0,
+        )
         return "Извините, время ожидания ответа от модели истекло. Попробуйте ещё раз."
     except Exception as e:
-        logger.error(f"Error in chunk RAG LLM call: {e}", exc_info=True)
+        logger.error(
+            "ChunkRAG LLM call failed (model=%s, prompt_len=%d): %s",
+            override_model or "default",
+            len(prompt) if prompt else 0,
+            e,
+            exc_info=True,
+        )
         return "Извините, сейчас не удалось получить ответ от модели."

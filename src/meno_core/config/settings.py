@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     # LIGHT RAG
     temperature: float = Field(default=0.3, validation_alias="TEMPERATURE")
     query_max_tokens: int = Field(
-        default=14_000,
+        default=24_000,
         validation_alias="QUERY_MAX_TOKENS",
     )
 
